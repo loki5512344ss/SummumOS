@@ -1,0 +1,12 @@
+[package]
+name = "helloos"
+version = "0.1.0"
+authors = ["nobody <nobody@localhost>"]
+edition = "2015"
+
+[[bin]]
+name = "helloos"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 1
