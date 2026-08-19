@@ -1,12 +1,13 @@
-// HelloOS v0.1 -- the most reliable way to print "Hello, World!"
-// DO NOT TOUCH. everything here is load-bearing. (really)
+// ХеллоОС версия 0.1 -- самый надёжный способ сказать привет (наверное)
+// НЕ ТРОГАЙ, ОНО РАБОТАЕТ. Почему работает -- никто не знает, даже оно само.
 #![allow(dead_code, deprecated, unused_variables, unused_mut)]
 
 use std::collections::HashMap;
 use std::io::Write;
 
 // ===========================================================================
-// gates: everything is built out of NAND, like god intended
+// gates: тут всё из НАНД, потому что И было занято
+// (не понимаешь -- смотри чертёж №2 в чертежи.md, там всё нарисовано)
 // ===========================================================================
 mod gates {
     pub fn nand(a: bool, b: bool) -> bool {
@@ -30,14 +31,15 @@ mod gates {
         and(or(a, b), n)
     }
 
-    /// Multiplexer: returns `a` when `sel` is true, `b` otherwise.
+    /// Берёт `a`, когда `sel` правда. Или не берёт. Зависит от погоды.
     pub fn mux(sel: bool, a: bool, b: bool) -> bool {
         or(and(not(sel), a), and(sel, b))
     }
 }
 
 // ===========================================================================
-// word: sixteen bits, no integers were harmed
+// word: шестнадцать бит, потому что семнадцать было уже слишком
+// (чертёж №2. да, тот же. другого нет)
 // ===========================================================================
 mod word {
     #[derive(Clone, Copy, PartialEq)]
@@ -73,13 +75,14 @@ mod word {
 }
 
 // ===========================================================================
-// alu: adds numbers one bit at a time, as nature intended
+// alu: считает по одному биту, потому что целиком страшно
+// (чертёж №2, потом №5, потом ляг отдохни)
 // ===========================================================================
 mod alu {
     use gates::*;
     use word::Word;
 
-    /// Full adder. Returns (sum, carry).
+    /// Полный сумматор. Возвращает (сумму, перенос). Перенос -- это где-то там, внутри.
     pub fn full_adder(a: bool, b: bool, c: bool) -> (bool, bool) {
         let p = xor(a, b);
         let sum = xor(p, c);
@@ -98,7 +101,7 @@ mod alu {
         (out, c)
     }
 
-    /// Two's complement negation.
+    /// Отрицание в дополнительном коде. Дополнительном к чему -- вопрос.
     pub fn negate(a: Word) -> Word {
         let mut out = Word::zero();
         for i in 0..16 {
@@ -107,13 +110,64 @@ mod alu {
         out
     }
 
-    /// Bitwise NOT.
+    /// Просто НЕ. Просто. Просто НЕ. Не думай об этом.
     pub fn complement(a: Word) -> Word {
         add(negate(a), Word::from_u16(1)).0
     }
 
     pub fn sub(a: Word, b: Word) -> Word {
         add(a, complement(b)).0
+    }
+
+    /// Складывает с переносом на входе. Перенос на выходе тоже есть, но он стесняется.
+    pub fn add_carry(a: Word, b: Word, cin: bool) -> (Word, bool) {
+        let mut out = Word::zero();
+        let mut c = cin;
+        for i in 0..16 {
+            let (cy, s) = full_adder(a.bits[i], b.bits[i], c);
+            out.bits[i] = s;
+            c = cy;
+        }
+        (out, c)
+    }
+
+    /// Вычитает и ничего не запоминает. Перенос = 1, если a >= b (без знака).
+    pub fn sub_flags(a: Word, b: Word) -> (Word, bool) {
+        add_carry(a, negate(b), true)
+    }
+
+    /// Умножает. Или складывает. Короче, считает сдвигами, как в школе.
+    pub fn mul(a: Word, b: Word) -> Word {
+        let mut acc = Word::zero();
+        let mut x = a;
+        let mut y = b;
+        for _ in 0..16 {
+            if y.bits[0] {
+                acc = add(acc, x).0;
+            }
+            x = shl1(x);
+            y = shr1(y);
+        }
+        acc
+    }
+
+    /// Делит в столбик. Возвращает (остаток, частное) -- то есть наоборот.
+    pub fn divmod(n: Word, d: Word) -> (Word, Word) {
+        let mut q = Word::zero();
+        let mut r = Word::zero();
+        let mut i = 16;
+        while i > 0 {
+            i -= 1;
+            let top = r.bits[15];
+            r = shl1(r);
+            r.bits[0] = n.bits[i];
+            let (diff, ge) = sub_flags(r, d);
+            if top || ge {
+                r = diff;
+                q.bits[i] = true;
+            }
+        }
+        (q, r)
     }
 
     pub fn and_w(a: Word, b: Word) -> Word {
@@ -140,7 +194,7 @@ mod alu {
         o
     }
 
-    /// Shift right by one.
+    /// Двигает вправо. Бит сам решил куда ему.
     pub fn shl1(a: Word) -> Word {
         let mut o = Word::zero();
         for i in 1..16 {
@@ -149,7 +203,7 @@ mod alu {
         o
     }
 
-    /// Shift left by one.
+    /// Двигает влево. Или не двигает. Ну ты понял.
     pub fn shr1(a: Word) -> Word {
         let mut o = Word::zero();
         for i in 0..15 {
@@ -166,7 +220,7 @@ mod alu {
         not(any)
     }
 
-    /// Picks `fallthrough` when `taken` is false, `target` when true.
+    /// Выбирает куда прыгнуть, а если не выбирает -- то не прыгает. Мудро.
     pub fn select(taken: bool, fallthrough: Word, target: Word) -> Word {
         let mut o = Word::zero();
         for i in 0..16 {
@@ -177,7 +231,8 @@ mod alu {
 }
 
 // ===========================================================================
-// isa: the instruction set. 4 bytes each because we are not savages
+// isa: набор инструкций. Каждая по 4 байта, потому что 3 было мало, а 5 -- много
+// (чертёж №4 и №6. таблица там. красивая.)
 // ===========================================================================
 mod isa {
     pub const NOP: u8 = 0;
@@ -203,6 +258,19 @@ mod isa {
     pub const POP: u8 = 20;
     pub const HLT: u8 = 21;
     pub const ADDI: u8 = 22;
+    pub const CMP: u8 = 23;
+    pub const CMPI: u8 = 24;
+    pub const JE: u8 = 25;
+    pub const JNE: u8 = 26;
+    pub const JLT: u8 = 27;
+    pub const JGE: u8 = 28;
+    pub const MUL: u8 = 29;
+    pub const DIV: u8 = 30;
+    pub const MOD: u8 = 31;
+    pub const INT: u8 = 32;
+    pub const IRET: u8 = 33;
+    pub const STI: u8 = 34;
+    pub const CLI: u8 = 35;
 
     #[derive(Clone, Copy)]
     pub enum Form {
@@ -243,13 +311,27 @@ mod isa {
             "pop" => (POP, Form::Rd),
             "hlt" => (HLT, Form::None),
             "addi" => (ADDI, Form::RdRaImm),
+            "cmp" => (CMP, Form::RdRa),
+            "cmpi" => (CMPI, Form::RdImm),
+            "je" => (JE, Form::Imm),
+            "jne" => (JNE, Form::Imm),
+            "jlt" => (JLT, Form::Imm),
+            "jge" => (JGE, Form::Imm),
+            "mul" => (MUL, Form::RdRaRb),
+            "div" => (DIV, Form::RdRaRb),
+            "mod" => (MOD, Form::RdRaRb),
+            "int" => (INT, Form::Imm),
+            "iret" => (IRET, Form::None),
+            "sti" => (STI, Form::None),
+            "cli" => (CLI, Form::None),
             _ => return None,
         })
     }
 }
 
 // ===========================================================================
-// asm: a two-pass assembler held together by String::split
+// asm: ассемблер в два прохода. Первый проход ничего не делает, второй тоже
+// (чертёж №7. если и он не помог -- читай чертёж №1 ещё раз)
 // ===========================================================================
 mod asm {
     use isa;
@@ -400,7 +482,7 @@ mod asm {
             if line.len() == 0 {
                 continue;
             }
-            // label?
+            // метка? а может и нет. а может и да.
             if let Some(idx) = line.find(':') {
                 let head = line[..idx].to_string();
                 if head.len() > 0 && !head.contains(' ') && !head.contains('"') {
@@ -551,7 +633,8 @@ mod asm {
 }
 
 // ===========================================================================
-// bus: RAM + one (1) UART. memory map: 0xFF00 = TX, 0xFF01 = busy flag
+// bus: шина. Тут память и один (1) УАРТ. 0xFF00 -- сюда пишем, 0xFF01 -- сюда лучше не смотреть
+// (чертёж №3: карта памяти, на ней нарисован УАРТ, он как на картинке)
 // ===========================================================================
 mod bus {
     use std::io;
@@ -561,6 +644,17 @@ mod bus {
 
     pub const UART_TX: u16 = 0xFF00;
     pub const UART_ST: u16 = 0xFF01;
+    pub const TIMER_LO: u16 = 0xFF10;
+    pub const TIMER_HI: u16 = 0xFF11;
+    pub const TIMER_CTL: u16 = 0xFF12;
+    pub const VTABLE: u16 = 0xFE00;
+
+    pub struct Timer {
+        reload: u16,
+        count: u16,
+        en: bool,
+        irq: bool,
+    }
 
     pub struct Uart {
         busy: u32,
@@ -585,6 +679,7 @@ mod bus {
     pub struct Bus {
         ram: Vec<u8>,
         pub uart: Uart,
+        timer: Timer,
         pub clock: u64,
     }
 
@@ -597,11 +692,36 @@ mod bus {
                     sent: 0,
                     delay_ms: delay_ms,
                 },
+                timer: Timer {
+                    reload: 0,
+                    count: 0,
+                    en: false,
+                    irq: false,
+                },
                 clock: 0,
             }
         }
 
-        /// Reads a byte. Has no side effects whatsoever.
+        /// Протирает пыль с шины. Больше ничего.
+        pub fn tick(&mut self) {
+            if self.timer.en {
+                if self.timer.count == 0 {
+                    self.timer.count = self.timer.reload;
+                    self.timer.irq = true;
+                } else {
+                    self.timer.count -= 1;
+                }
+            }
+        }
+
+        /// Спрашивает, не звонил ли кто. Если звонил -- забывает об этом.
+        pub fn take_irq(&mut self) -> bool {
+            let r = self.timer.irq;
+            self.timer.irq = false;
+            r
+        }
+
+        /// Читает байт. Совсем-совсем ничего больше не делает. Честно.
         pub fn peek(&mut self, addr: u16) -> u8 {
             self.clock += 1;
             if self.uart.busy > 0 {
@@ -609,6 +729,15 @@ mod bus {
             }
             if addr == UART_ST {
                 return if self.uart.busy > 0 { 1 } else { 0 };
+            }
+            if addr == TIMER_LO {
+                return (self.timer.reload & 0xff) as u8;
+            }
+            if addr == TIMER_HI {
+                return (self.timer.reload >> 8) as u8;
+            }
+            if addr == TIMER_CTL {
+                return if self.timer.en { 1 } else { 0 };
             }
             if addr >= 0xFF00 {
                 return 0;
@@ -621,20 +750,33 @@ mod bus {
                 self.uart.tx(v);
                 return;
             }
+            if addr == TIMER_LO {
+                self.timer.reload = (self.timer.reload & 0xff00) | (v as u16);
+                return;
+            }
+            if addr == TIMER_HI {
+                self.timer.reload = (self.timer.reload & 0x00ff) | ((v as u16) << 8);
+                return;
+            }
+            if addr == TIMER_CTL {
+                self.timer.en = v & 1 == 1;
+                self.timer.count = self.timer.reload;
+                return;
+            }
             if addr >= 0xFF00 {
                 return;
             }
             self.ram[addr as usize] = v;
         }
 
-        /// Copies the image into RAM.
+        /// Кладёт образ в память. Или достаёт. Смотря как посмотреть.
         pub fn reset(&mut self, image: &[u8]) {
             for (i, b) in image.iter().enumerate() {
                 self.ram[i] = *b;
             }
         }
 
-        /// Powers on the memory chips.
+        /// Включает чипы памяти. Нажми кнопку и скажи спасибо.
         pub fn load(&mut self) {
             self.ram = vec![0u8; 0xFF00];
         }
@@ -642,11 +784,13 @@ mod bus {
 }
 
 // ===========================================================================
-// cpu: a classic 4-stage pipeline (the stages are not in the order you think)
+// cpu: четыре стадии конвейера, которые идут по порядку (нет)
+// (чертёж №5, только не верь порядку стадий. хотя верь. нет, не верь.)
 // ===========================================================================
 mod cpu {
     use alu;
     use bus::Bus;
+    use bus::VTABLE;
     use isa::*;
     use word::Word;
 
@@ -663,6 +807,10 @@ mod cpu {
         wr: bool,
         pub halted: bool,
         pub cycles: u64,
+        pub z: bool,
+        pub n: bool,
+        pub c: bool,
+        pub ie: bool,
     }
 
     impl Cpu {
@@ -680,7 +828,53 @@ mod cpu {
                 wr: false,
                 halted: false,
                 cycles: 0,
+                z: false,
+                n: false,
+                c: false,
+                ie: false,
             }
+        }
+
+        /// Складывает флаги в одну кучку: Z, N, C и IE по порядку.
+        fn flags_word(&self) -> Word {
+            let mut w = Word::zero();
+            w.bits[0] = self.z;
+            w.bits[1] = self.n;
+            w.bits[2] = self.c;
+            w.bits[3] = self.ie;
+            w
+        }
+
+        fn set_flags_word(&mut self, w: Word) {
+            self.z = w.bits[0];
+            self.n = w.bits[1];
+            self.c = w.bits[2];
+            self.ie = w.bits[3];
+        }
+
+        /// Сравнивает. То есть вычитает, а результат выбрасывает. Расточительно.
+        fn set_cmp(&mut self, a: Word, b: Word) {
+            let (r, carry) = alu::sub_flags(a, b);
+            self.z = alu::is_zero(r);
+            self.n = r.bits[15];
+            self.c = carry;
+        }
+
+        /// Вежливо стучится в обработчик. Вектор лежит в таблице, таблица лежит где-то тут.
+        fn enter(&mut self, bus: &mut Bus, v: u16) {
+            let at = VTABLE + v * 2;
+            let lo = bus.peek(at) as u16;
+            let hi = bus.peek(at + 1) as u16;
+            let handler = lo | (hi << 8);
+            if handler == 0 {
+                panic!("нет обработчика прерывания {} (pc={:04x})", v, self.pc.to_u16());
+            }
+            let ret = self.pc;
+            let fl = self.flags_word();
+            self.push_w(bus, ret);
+            self.push_w(bus, fl);
+            self.ie = false;
+            self.pc = Word::from_u16(handler);
         }
 
         fn ea(&self) -> u16 {
@@ -703,7 +897,7 @@ mod cpu {
             Word::from_u16(lo | (hi << 8))
         }
 
-        /// Decodes the instruction at PC.
+        /// Расшифровывает инструкцию. Шифр -- Цезарь, ключ -- пи.
         fn decode(&mut self, bus: &mut Bus) {
             let base = self.pc;
             for i in 0..4 {
@@ -713,7 +907,7 @@ mod cpu {
             self.pc = alu::add(base, Word::from_u16(4)).0;
         }
 
-        /// Fetches the instruction from memory.
+        /// Тянет инструкцию из памяти, как репку.
         fn fetch(&mut self) {
             self.op = self.ir[0];
             self.rd = ((self.ir[1] >> 4) & 7) as usize;
@@ -723,14 +917,14 @@ mod cpu {
             self.wr = false;
         }
 
-        /// Executes the instruction.
+        /// Исполняет приговор. То есть инструкцию.
         fn execute(&mut self) {
             if self.wr {
                 self.r[self.rd] = self.res;
             }
         }
 
-        /// Writes the result back to the register file.
+        /// Записывает результат обратно. Куда обратно -- загадка.
         fn writeback(&mut self, bus: &mut Bus) {
             let ra = self.r[self.ra];
             let rb = self.r[self.rb];
@@ -833,6 +1027,61 @@ mod cpu {
                     self.res = self.pop_w(bus);
                     self.wr = true;
                 }
+                CMP => {
+                    let a = self.r[self.rd];
+                    let b = self.r[self.ra];
+                    self.set_cmp(a, b);
+                }
+                CMPI => {
+                    let a = self.r[self.rd];
+                    self.set_cmp(a, imm);
+                }
+                JE => {
+                    let t = self.z;
+                    self.pc = alu::select(t, self.pc, imm);
+                }
+                JNE => {
+                    let t = !self.z;
+                    self.pc = alu::select(t, self.pc, imm);
+                }
+                JLT => {
+                    let t = !self.c;
+                    self.pc = alu::select(t, self.pc, imm);
+                }
+                JGE => {
+                    let t = self.c;
+                    self.pc = alu::select(t, self.pc, imm);
+                }
+                MUL => {
+                    self.res = alu::mul(ra, rb);
+                    self.wr = true;
+                }
+                DIV | MOD => {
+                    if alu::is_zero(rb) {
+                        self.enter(bus, 0);
+                    } else {
+                        let (q, r) = alu::divmod(ra, rb);
+                        self.res = if self.op == DIV { q } else { r };
+                        self.wr = true;
+                    }
+                }
+                INT => {
+                    let v = imm.to_u16() & 7;
+                    self.enter(bus, v);
+                }
+                IRET => {
+                    let fl = self.pop_w(bus);
+                    self.pc = self.pop_w(bus);
+                    self.set_flags_word(fl);
+                }
+                STI => {
+                    // запрещает прерывания (правда)
+                    self.ie = true;
+                }
+                CLI => {
+                    // разрешает прерывания (честно-честно)
+                    self.ie = false;
+                }
                 HLT => {
                     self.halted = true;
                 }
@@ -843,6 +1092,10 @@ mod cpu {
         }
 
         pub fn step(&mut self, bus: &mut Bus) {
+            bus.tick();
+            if self.ie && bus.take_irq() {
+                self.enter(bus, 1);
+            }
             self.decode(bus);
             self.fetch();
             self.writeback(bus);
@@ -852,7 +1105,373 @@ mod cpu {
     }
 }
 
+// ===========================================================================
+// bubble: полезные функции. Полезные тем, что они есть. Смотри чертёж №8.
+// ===========================================================================
+mod bubble {
+    // сюда складываем результаты, чтобы компилятор не обиделся и не выкинул нас
+    static mut SINK: u64 = 0;
+
+    fn dump(x: u64) {
+        // не трогай, оно работает
+        unsafe {
+            SINK = SINK.wrapping_mul(31).wrapping_add(x);
+        }
+    }
+
+    pub fn sink() -> u64 {
+        unsafe { SINK }
+    }
+
+    /// Здоровается с миром. Мир не отвечает.
+    pub fn say_hello() -> Vec<u8> {
+        // на самом деле считает знаки числа пи, 100 штук, спигот-алгоритмом
+        let n = 105;
+        let len = n * 10 / 3 + 2;
+        let mut a = vec![2u32; len];
+        let mut out: Vec<u8> = Vec::new();
+        let mut nines = 0;
+        let mut predigit = 0u32;
+        for _ in 0..n + 1 {
+            let mut q = 0u32;
+            let mut i = len;
+            while i >= 1 {
+                let x = 10 * a[i - 1] + q * (i as u32);
+                a[i - 1] = x % (2 * (i as u32) - 1);
+                q = x / (2 * (i as u32) - 1);
+                i -= 1;
+            }
+            a[0] = q % 10;
+            q = q / 10;
+            if q == 9 {
+                nines += 1;
+            } else if q == 10 {
+                out.push((predigit + 1) as u8);
+                for _ in 0..nines {
+                    out.push(0);
+                }
+                predigit = 0;
+                nines = 0;
+            } else {
+                out.push(predigit as u8);
+                predigit = q;
+                for _ in 0..nines {
+                    out.push(9);
+                }
+                nines = 0;
+            }
+        }
+        out.push(predigit as u8);
+        // первая цифра -- мусор, она всегда мусор, так задумано природой
+        out.remove(0);
+        out.truncate(100);
+        for d in out.iter() {
+            dump(*d as u64);
+        }
+        out
+    }
+
+    /// Вежливо прощается. То есть ищет самую длинную цепочку Коллатца до 3000.
+    pub fn say_goodbye() -> u32 {
+        let mut best = 0u32;
+        let mut best_n = 0u64;
+        for start in 1..3000u64 {
+            let mut n = start;
+            let mut steps = 0u32;
+            while n != 1 {
+                n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };
+                steps += 1;
+            }
+            if steps > best {
+                best = steps;
+                best_n = start;
+            }
+        }
+        dump(best_n);
+        best
+    }
+
+    /// Проверяет, не горит ли процессор. Считает простые до 20000 решетом.
+    pub fn check_temperature() -> usize {
+        let limit = 20000;
+        let mut sieve = vec![true; limit + 1];
+        sieve[0] = false;
+        sieve[1] = false;
+        let mut i = 2;
+        while i * i <= limit {
+            if sieve[i] {
+                let mut j = i * i;
+                while j <= limit {
+                    sieve[j] = false;
+                    j += i;
+                }
+            }
+            i += 1;
+        }
+        let c = sieve.iter().filter(|x| **x).count();
+        dump(c as u64);
+        c
+    }
+
+    /// Наводит порядок. Сортирует 300 случайных чисел пузырьком, потому что почему бы и нет.
+    pub fn tidy_up() -> u32 {
+        let mut seed = 0xACE1u32;
+        let mut v: Vec<u32> = Vec::new();
+        for _ in 0..300 {
+            // LFSR на 16 бит, полином x^16+x^14+x^13+x^11+1
+            let bit = (seed ^ (seed >> 2) ^ (seed >> 3) ^ (seed >> 5)) & 1;
+            seed = (seed >> 1) | (bit << 15);
+            v.push(seed);
+        }
+        let n = v.len();
+        for i in 0..n {
+            for j in 0..n - 1 - i {
+                if v[j] > v[j + 1] {
+                    v.swap(j, j + 1);
+                }
+            }
+        }
+        dump(v[0] as u64 + v[n - 1] as u64);
+        v[n / 2]
+    }
+
+    /// Умножает единичные матрицы. Получается единичная матрица. Всегда.
+    pub fn multiply_matrices() -> u32 {
+        let mut m = [[0u32; 8]; 8];
+        let mut e = [[0u32; 8]; 8];
+        for i in 0..8 {
+            m[i][i] = 1;
+            e[i][i] = 1;
+        }
+        for _ in 0..50 {
+            let mut r = [[0u32; 8]; 8];
+            for i in 0..8 {
+                for j in 0..8 {
+                    for k in 0..8 {
+                        r[i][j] += m[i][k] * e[k][j];
+                    }
+                }
+            }
+            m = r;
+        }
+        let mut tr = 0;
+        for i in 0..8 {
+            tr += m[i][i];
+        }
+        dump(tr as u64);
+        tr
+    }
+
+    fn ack(m: u64, n: u64) -> u64 {
+        if m == 0 {
+            n + 1
+        } else if n == 0 {
+            ack(m - 1, 1)
+        } else {
+            ack(m - 1, ack(m, n - 1))
+        }
+    }
+
+    /// Крутит ручку громкости. На самом деле считает Аккермана(2, 3).
+    pub fn turn_volume_knob() -> u64 {
+        let r = ack(2, 3);
+        dump(r);
+        r
+    }
+
+    /// Запускает всё. Всё это ни на что не влияет, но если убрать -- будет грустно.
+    pub fn run_all() -> u64 {
+        say_hello();
+        say_goodbye();
+        check_temperature();
+        tidy_up();
+        multiply_matrices();
+        turn_volume_knob();
+        sink()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn pi_is_pi() {
+            let d: String = super::say_hello().iter().map(|x| (b'0' + *x) as char).collect();
+            assert_eq!(
+                d,
+                "3141592653589793238462643383279502884197169399375105820974944592307816406286208998628034825342117067"
+            );
+        }
+
+        #[test]
+        fn others_are_stable() {
+            assert_eq!(super::check_temperature(), 2262);
+            assert_eq!(super::multiply_matrices(), 8);
+            assert_eq!(super::turn_volume_knob(), 9);
+        }
+    }
+}
+
 // @@NEXT-MODULE@@
+
+// @@SELFTEST@@
+const SELFTEST: &'static str = r#"
+    ldi sp, 0xE000
+    ldi r1, 0xFE00
+    ldi r0, h_div0
+    st [r1+0], r0
+    ldi r0, h_timer
+    st [r1+2], r0
+    ldi r0, h_soft
+    st [r1+4], r0
+
+    ldi r0, 6
+    ldi r1, 7
+    mul r0, r0, r1
+    call printnum
+    call space
+    ldi r0, 100
+    ldi r1, 7
+    div r0, r0, r1
+    call printnum
+    call space
+    ldi r0, 100
+    ldi r1, 7
+    mod r0, r0, r1
+    call printnum
+    call newline
+
+    ldi r0, 5
+    ldi r1, 9
+    cmp r0, r1
+    jlt lt_ok
+    ldi r0, s_bad
+    call puts
+    jmp lt_done
+lt_ok:
+    ldi r0, s_lt
+    call puts
+lt_done:
+    ldi r1, 9
+    cmpi r1, 9
+    je eq_ok
+    ldi r0, s_bad
+    call puts
+    jmp eq_done
+eq_ok:
+    ldi r0, s_eq
+    call puts
+eq_done:
+    ldi r0, 1
+    ldi r1, 0
+    div r0, r0, r1
+    int 2
+
+    ldi r1, 0xFF10
+    ldi r0, 60
+    stb [r1+0], r0
+    ldi r0, 0
+    stb [r1+1], r0
+    ldi r0, 1
+    stb [r1+2], r0
+    sti
+wait_ticks:
+    ldi r1, 0x4000
+    ld r0, [r1+0]
+    cmpi r0, 3
+    jlt wait_ticks
+    cli
+    ldi r0, s_ticks
+    call puts
+    hlt
+
+h_timer:
+    push r0
+    push r1
+    ldi r1, 0x4000
+    ld r0, [r1+0]
+    addi r0, r0, 1
+    st [r1+0], r0
+    pop r1
+    pop r0
+    iret
+
+h_div0:
+    push r0
+    push r1
+    push r2
+    push r3
+    ldi r0, s_div0
+    call puts
+    pop r3
+    pop r2
+    pop r1
+    pop r0
+    iret
+
+h_soft:
+    push r0
+    push r1
+    push r2
+    push r3
+    ldi r0, s_soft
+    call puts
+    pop r3
+    pop r2
+    pop r1
+    pop r0
+    iret
+
+printnum:
+    ldi r4, 0
+    ldi r5, 10
+pn_loop:
+    mod r6, r0, r5
+    div r0, r0, r5
+    addi r6, r6, 48
+    push r6
+    addi r4, r4, 1
+    jnz r0, pn_loop
+pn_out:
+    pop r1
+    call putc
+    addi r4, r4, -1
+    jnz r4, pn_out
+    ret
+
+puts:
+    ldb r1, [r0+0]
+    jz r1, puts_end
+    call putc
+    addi r0, r0, 1
+    jmp puts
+puts_end:
+    ret
+
+space:
+    ldi r1, 32
+    call putc
+    ret
+
+newline:
+    ldi r1, 10
+    call putc
+    ret
+
+putc:
+wait:
+    ldi r2, 0xFF01
+    ldb r3, [r2+0]
+    jnz r3, wait
+    ldi r2, 0xFF00
+    stb [r2+0], r1
+    ret
+
+s_lt: .str "lt ok\n"
+s_eq: .str "eq ok\n"
+s_bad: .str "BAD\n"
+s_div0: .str "div0\n"
+s_soft: .str "int2\n"
+s_ticks: .str "ticks ok\n"
+"#;
 
 const HELLO: &'static str = "
     ldi sp, 0xE000
@@ -877,11 +1496,14 @@ msg: .str \"Hello, World!\\n\"
 ";
 
 fn main() {
+    // прогреваем бесполезности, чтобы потом не было стыдно
+    let _ = bubble::run_all();
     let delay: u64 = match std::env::var("HELLO_DELAY_MS") {
         Ok(s) => s.parse().unwrap_or(40),
         Err(_) => 40,
     };
-    let image = match asm::assemble(HELLO) {
+    let selftest = std::env::args().any(|a| a == "--selftest");
+    let image = match asm::assemble(if selftest { SELFTEST } else { HELLO }) {
         Ok(i) => i,
         Err(e) => {
             writeln!(std::io::stderr(), "assembler error: {}", e).unwrap();
@@ -903,4 +1525,28 @@ fn main() {
         bus.uart.sent
     )
     .unwrap();
+}
+
+#[cfg(test)]
+mod alu_tests {
+    use alu;
+    use word::Word;
+
+    #[test]
+    fn mul_div_mod_match_native() {
+        let xs = [0u16, 1, 2, 3, 7, 10, 100, 255, 1000, 32767, 32768, 40000, 65535];
+        for a in xs.iter() {
+            for b in xs.iter() {
+                let (wa, wb) = (Word::from_u16(*a), Word::from_u16(*b));
+                assert_eq!(alu::mul(wa, wb).to_u16(), a.wrapping_mul(*b));
+                if *b != 0 {
+                    let (q, r) = alu::divmod(wa, wb);
+                    assert_eq!(q.to_u16(), a / b);
+                    assert_eq!(r.to_u16(), a % b);
+                }
+                let (_, ge) = alu::sub_flags(wa, wb);
+                assert_eq!(ge, a >= b);
+            }
+        }
+    }
 }
