@@ -1,3 +1,64 @@
+// ===========================================================================
+// ОБЯЗАТЕЛЬНЫЙ ПОРТРЕТ. Без него код не компилируется (компилируется, но грустит).
+// Кто это -- неизвестно. Что он тут делает -- тоже. Не стирать: он смотрит за кодом.
+// ===========================================================================
+// ll!!i<~~+++++~<+~<_-???--_____-_++-]?___?---____-?]]]]]]?-_~ill!i>><<>+__+~~+++++++_-?--_<lli!!iiiiii>><<~+_-?
+// >il<~<~~++++ii<+>>_-????-__~<>~_--++++_-]_~++__-_][[[[]??->i!II;;:I>ii>><+_++~~++__??--_+iII!i,:!!iiiii><<<+_-
+// ~~~~~~~~++++~~<~ii+------+<<__-~~~++++++?++____?][[[]]??--_>lllI:;Ii!l!i<<~~___++_-??-_+~I::;i;l!!!iiiiiiii>~+
+// <<<<<<~~~~++++_____-----__+<>i><<<<><><+?++_~~~-[[[[]]??--_+!;;;!!l!lll!i<<<+~~____--_+~<<<>>i!lllllllllll!i<~
+// ii>>>>><<<<~~~+++++++___<i!i!iii!!il!i~__<<><_+++?]]]]??-_<!!il;;;l>>lI;l>++~~~++++__~<>>iiii!lllllllllll!i>~+
+// iii!iiiiIlli>><<<<<~~~+~~~<>i!!Ill>++il+>i~~ii>i<<~-]]??+iilI;;!!!IiIIi<>ii><++++_-_+~>iiii!!!lllIl!!!!!i><+_?
+// !!!ll!!!,^,:;lll!!>><<<<<~~++++++++__+<~>illiii!>i>_?]??~iilIII;,IIi!<~+____--]]]?-_+~<>ii!l;Il:`'^!iii><+-???
+// lllll!!l;```,I^'^::i>>><<~~~~+++++______-__+<~+>i!l~????<i>><<i>>><<>>><~+_-??]]]??-_++<!;,``,I`'`:iii><_?]???
+// III;llll:'.':I^``:',,I!i<<<~~~~~~+++++____----?}]]1?}ruzununf[__++~<>><<~+_--????????_>lII^`'';   :ii<<~-?????
+// ;:` ;lllI'. ,:   ,   `:,;i><<<<<<<~~~~+++__-?})(fQmcLqqpqwqmZLzt]++~~<<~~+_--????-~<~ill;I```^;' 'li><>!~-----
+// ,' .:lIII.' :,...^``^`,''liii>li!lii<<<<><+?)CbdkbbkhabppkobkZmLJj_++~<<<<+~_-???~><<<>iil;^''^' '!i<<i!i<_---
+// `.  .II;;^  :`   ..   ,I!iiiil,^;;:,,:i!;l-](XOpaooaa#aabhhdbwpww0v~>lI:lllIi__--_>>lllll:::;,::^!><~<II;!i___
+// `'   II;;, ':`'. .`'Ill!!!!!!l^,,,l;:;!!+)/cYQObhahhkkbqZLJUYXQddpQ_illlI:II>__----_~<i!!;,^:`,;^><~+>IIliI!<+
+// ''   ;I;;: ^'`    '^lll!!!!!!l::  `^I`l;-}fv0ZOQCUzvuuvxfjjfttfvmdm1i!l::;>>+________-_<I:;;!,;li<~~~l::;;;l<~
+// :`   ,;;;; ^.'    ,:llllll!!l` .,`:,:Iillifqp0zzXYXvunxrrrjftttjXZwx~i!I;l;:I+__++++_--<;:,;I,:i<++~<l;;;l><<<
+// .    `;:;:`^  .',;;IIllll!!!l,'. `  .'i^,<XdpLXXYUYXcuxrxxrftttju0mniI;Iil!l!<+___++___+<!l!;;I<++++!,`^:^l!ii
+// :,.  `;;;;`^`:;;;IIIIIIll!!!i!iil; .`'i^:~vpqCYUL00OOLXnxcUCUzcvxCJ-l;:,i<~+-----__++_+++~+~i;,>+++~!:,^I;IIll
+// :::, ':;;:;;;;;;;;;;;;,`:l!!!!iii!^``:i,,<|ZqJULL00LQ0OUrjvLLXcnuXz<lIIl+__-----_<!<+++~~~~+++<<+++~!liill;;::
+// :::::::;;::;;;;;;:,' . '`':l!!ii>il^.,li~_]UwUUJJUYXCLLJurjnnnjtfnur;,i~+++__-_+il::Il><<<<~+++++++~~<>il;:^
+// ,,::::::::::;;;;,           Il!!iiiilI><~}cULYYUUUUJJCJUvrjxrjftjru)i><<<~+__+l::,^`` '':i><+++++++~~<i!I:
+// `^,,:::::::;;;;:.           ^;l!!ii>><<~+-rYYUUUJJJJCQO0Jvvjcxffjj|<>ii><~+__iIlI'' `'```!><~+++++~~<>i!I:
+//    ^,::;;;;;::^`            `':I!i><<<~~+_-jXCCJCCCCCCJYccnfrnrrt]<<>>i>><<<<lI:,;:,' .`';l<~+++++~~~<il,
+// ''^^,:::;;;;,,;:,,,:^^^^::,:;lIIIi<<~~~+++~~-]rXCCCCQwpmQ0mOuxrr?<~~~<<>lli+i!li<lI;:I,^,;lI!<++++++~>:^.`.
+//   `^::::;;;;;;I;IIII;;::;IIllii!><~~+++__--___{nJCCCLLQYvYUxrxr|<<~~+++++_------_++~<<<<<<<~++______+<>ilII;II
+//  ^,:;;:::;:                  .  ,~~+__--->!!<(_YYCCCCCQQJcnfjfj{-~++++++illi!l!ll,^`':``^,I;Il+_____+~i^' '`
+// ,::;;;::;;:  `'   `.         `''l+__--???+~}n0(YLQQLLCCYccQJUJUX[+__----ilIilIIIl^`' ,'```l:::<______+++~il;,`
+// ,;;;;;;;;;^  `    `            'l__-?]]][(YdbhrJQ0OOZZZOLYLLCJJc{--???]]+<>~iii!>lI;;lIIll>lll<________++++~l,
+// :;I;III;;I'  ,    ,    ^    ^`^^>_?]{/vQq*MMM#cX0OZZZZZOLYLLJCCcvhwLcf)[+ii<illlil;::lIIIIiI;;i++________++~<!
+// :;IIllllll' `:..'`;'''.,'``^IIl<{/vQdoMMMWWWWMwjrC0QCL00LJLLLJLz[ko**#*hwJn|-iii<<!ii<<>>i<illi++++++_____++++
+// :^;Illll!l' ^^''',;^``^I^,:l_|vLqa#MMMWMMMWWWWMU/{nCUXXXYJLCLCCz]uo**#######*dCx}~lI;llllll!::I~~~~~~+~+++_+++
+// ,`Illl!!!I  ^`.''::`^,;!<]tYmh*#MMMMMM#M##M&&&&oUr{(vzvuvzXULYx(]]b****##########hU_i><iiii<l;I~~~~~~~lIi~++++
+//  'll!!iiiI^,l^,,:!I;I~jYOdh*MMMMMMMM###M*##&&8&&pCx{])jxxxccft/?-?0****#######*****w~<~><>i<I;;<<><<<<ll;:I<+_
+//  ,!!ii>>>;`,l^:::!;;~Qa#MMMMMMMMMMM##*M#**#M&&88oUv/{]?}fvn(((}???w****######****#*ot<~>iii>:^^iiii>>>l,,;;;i<
+// ^!iii><<>I;l!llll<!ijh#MMMMMWWMMMM#***#hh##MW&&&&LcrncXXujr()}[]]ro*******######MMM#C++<>iii;:^iiiiiiil:,;llII
+//  iiii><<i;:llIll!~>~XoMWWWWWWWWMMM#*obCXCb***WWWWMdQcnnnnxr(1}rQp#******###MMMMMWWMMd_++~<i>l;:iiiiiii!,,;ll;I
+// '>>i><<<ilI!!l!!><i_q*W&&&&&&&&&WM#*ZcC0wbQXzaMMMMdcvjt/frr|f|cOo#******###MMMMWWWW#o}~<<ill^  liiiiii!. .'`^;
+// :<<<<<<iii>+<~++?-?]0bM&888888888W#kY0Q0JvnnnvYLbMM0cuxnvvcvCUQwa#******##MMMMWW&WM#*)__---_+<<<<><<<>>,^' `i<
+// l<<~~~<;;;I<I!!!+><~vOZh&8&&88%%8&#J0Z0QLYzzJLLJLM#hUXcvcczzYLL0*#****###MMMWWWW&WWM*)<>i!ll,'. `>>>>>i` ' ^i>
+// <++__+>;IIl+!iii+><+[qo#&88888%%%8ov0000LCzncY0a#MM*CzvvvvnrUJUO&#****###MMWWW&&&&WMa}~<ii!l;^'''i>>>ii:'^Iii<
+// +_____>iii<~><<<_~+_[O#&&888%%%%%8oC00000LUcvcJmMMMMJjftttjrJ0Za&########MWW&&&&&&&Wk?~<>>iii;:,^i>>>>iiiiii><
+// _----_i!i!<i><<+_++-z0hW&&8888%%B%&0000O0CzzJmo#MMMMdxxnvzXXQmqo&#####MMMMW&&&&&&&&Wd_<ill;;l,'''l>i>>iiiiiii>
+// -----_iiii+><<<+++_rQ0qM&&&8888%B%MQO0000UXw#MMMMWMM*UzXYUUJQZm*&MMMMMMMMMW&&88888&Wp+>ilI;;l;,^^!<<<<>iiiiiii
+// -???-_><<<_~~++___|LLCQpW&&&&&&8MmLm00OOYvY#MMMMWWMM#LYYXYXU0O0%&WWWMMMMMW&&&88888&Wd+>>i!!!>lllI>~~~<>>iiiiii
+// ?????+i>>~+<~~~__}QmO0Z*8&&&&WawObM&mZZ0YcmMMMWWWWWMMCzcunu0Om#B&&&&WWWWW&8&88%%88&Mb<ii!ll!ilI;;i+++~<<>i!I:;
+// ?]]]?~><<+~<~~~-]Oo##&88888Wadmk&88&hpqwLJ*WWWW&&&WMMZuvzCqqZp%B8&&&&WW&&8888%%%88&Wb_<>iiii>!lI;i_+++~<l:^^ll
+// ][[]]<<<<_~+++_?vdhaahkko#a*Mk*%%%8Mbbbk*&8&&&&&&&WMMdJJQwqbZk@B888&&&&88888%%%%%88Wh]~~<<<~+~<<<+?--__+<i!!<<
+// ][[[?>>>>_<~++_?Cddbpqk#aa8%*M%B%%8Wkbb#$@B&&&&&&&WWMhCQqdphZo$B88888&88888%BBBBBB%8a}+~~~~~+~<>><]]]?-->lll><
+// [[[]-<<<~-~++_-?0kbh#&8h*%%&&BBkbb88#Wa*$$@%&&&&&&WWMo0mqqwhZW$B%%88888888%B@@B%8&Woc?_+++++__~~~+}[[}}[_<<<<+
+// [[[[+<~~+_++_--?0bM8%%&#&88%BBBap8BB%%ao$$$$B88&&&WWM*ZqwmZkZ&$B%%%888888%BBBB%8MhZj]--__________-]][[[[-_+++_
+// [[[[+<~~+++__-?]wW%%B%%&%%%BBBBBBB@BBB%%$$$$$B88&&WWWMwZZmw*Z&$B%B%%8888%B@@BB%&m)[]?---------____??]???-++~~_
+// [[[[+++~_~+_---/*%BBB%%8BBBBBBBBBBB@@BB@$$$$$$B88&WWWMpbkdqaZ&$B8B%%888%BB%%%8%%*t]??----------___?]]]??-_+++_
+// [[[]~~++?+__--?|h8B%%B%%BBBBBBBBBBBB@B@@@$$$$$$B8&WWW#mZmpbhZ&$B8B%%%%%%%&&&&&&Wht??----------__---]]]]?--____
+// [[[?~+~+-+__--?]|Z&%%B%%BBBBBBBBBBB@@@@@$$$$$$$$B&WWWMwqdbdbZ8$B88888%%88888&WM#U{?----------------?????-__++_
+// [[[]??--?------?]{ub8B%BBBBBBBBB@@@@@@@$$$$$$$$$$B&WWWkbddhdZ8$@888&#%B%%%88&&WMb)?-----------------????--_++_
+// [[[[[[[]]]]??????][)vZh*MMW%BBB@@@@@@@@$$$$$$$$$$$%W&&%8#8&qZ%$B%88B8BB%88&&&WMMd/?----------------????----___
+// ===========================================================================
+//
 // ХеллоОС версия 0.1 -- самый надёжный способ сказать привет (наверное)
 // НЕ ТРОГАЙ, ОНО РАБОТАЕТ. Почему работает -- никто не знает, даже оно само.
 #![allow(dead_code, deprecated, unused_variables, unused_mut)]
@@ -641,6 +702,7 @@ mod bus {
     use std::io::Write;
     use std::thread;
     use std::time::Duration;
+    use std::time::Instant;
 
     pub const UART_TX: u16 = 0xFF00;
     pub const UART_ST: u16 = 0xFF01;
@@ -648,6 +710,21 @@ mod bus {
     pub const TIMER_HI: u16 = 0xFF11;
     pub const TIMER_CTL: u16 = 0xFF12;
     pub const VTABLE: u16 = 0xFE00;
+    pub const VRAM: u16 = 0xF000;
+    pub const VID_W: usize = 64;
+    pub const VID_H: usize = 24;
+    pub const VID_CTL: u16 = 0xFF20;
+    pub const DISK_A0: u16 = 0xFF30;
+    pub const DISK_A1: u16 = 0xFF31;
+    pub const DISK_A2: u16 = 0xFF32;
+    pub const DISK_DATA: u16 = 0xFF33;
+
+    pub struct Video {
+        fps: u64,
+        started: bool,
+        next: Option<Instant>,
+        pub frames: u64,
+    }
 
     pub struct Timer {
         reload: u16,
@@ -680,6 +757,9 @@ mod bus {
         ram: Vec<u8>,
         pub uart: Uart,
         timer: Timer,
+        pub video: Video,
+        disk: Vec<u8>,
+        disk_addr: u32,
         pub clock: u64,
     }
 
@@ -698,7 +778,69 @@ mod bus {
                     en: false,
                     irq: false,
                 },
+                video: Video {
+                    fps: 0,
+                    started: false,
+                    next: None,
+                    frames: 0,
+                },
+                disk: Vec::new(),
+                disk_addr: 0,
                 clock: 0,
+            }
+        }
+
+        pub fn attach_disk(&mut self, image: Vec<u8>) {
+            self.disk = image;
+        }
+
+        pub fn set_fps(&mut self, fps: u64) {
+            self.video.fps = fps;
+        }
+
+        /// Рисует кадр. Рисует его туда, где его никто не просил: в терминал.
+        fn present(&mut self) {
+            let mut s = String::new();
+            if !self.video.started {
+                s.push_str("\x1b[2J\x1b[?25l");
+                self.video.started = true;
+            }
+            s.push_str("\x1b[H");
+            for y in 0..VID_H {
+                for x in 0..VID_W {
+                    let b = self.ram[VRAM as usize + y * VID_W + x];
+                    s.push(if b >= 32 && b < 127 { b as char } else { ' ' });
+                }
+                if y + 1 < VID_H {
+                    s.push('\n');
+                }
+            }
+            if self.video.fps > 0 {
+                let frame = Duration::from_micros(1_000_000 / self.video.fps);
+                let now = Instant::now();
+                let due = match self.video.next {
+                    Some(t) => t,
+                    None => now,
+                };
+                if due > now {
+                    thread::sleep(due.duration_since(now));
+                }
+                self.video.next = Some(due + frame);
+            }
+            let out = io::stdout();
+            let mut h = out.lock();
+            h.write_all(s.as_bytes()).unwrap();
+            h.flush().unwrap();
+            self.video.frames += 1;
+        }
+
+        /// Убирает за собой: возвращает курсор, который мы спрятали.
+        pub fn finish(&mut self) {
+            if self.video.started {
+                let out = io::stdout();
+                let mut h = out.lock();
+                h.write_all(b"\x1b[?25h\n").unwrap();
+                h.flush().unwrap();
             }
         }
 
@@ -730,6 +872,15 @@ mod bus {
             if addr == UART_ST {
                 return if self.uart.busy > 0 { 1 } else { 0 };
             }
+            if addr == DISK_DATA {
+                let b = if (self.disk_addr as usize) < self.disk.len() {
+                    self.disk[self.disk_addr as usize]
+                } else {
+                    0
+                };
+                self.disk_addr += 1;
+                return b;
+            }
             if addr == TIMER_LO {
                 return (self.timer.reload & 0xff) as u8;
             }
@@ -748,6 +899,24 @@ mod bus {
         pub fn poke(&mut self, addr: u16, v: u8) {
             if addr == UART_TX {
                 self.uart.tx(v);
+                return;
+            }
+            if addr == VID_CTL {
+                if v & 1 == 1 {
+                    self.present();
+                }
+                return;
+            }
+            if addr == DISK_A0 {
+                self.disk_addr = (self.disk_addr & 0xffff00) | (v as u32);
+                return;
+            }
+            if addr == DISK_A1 {
+                self.disk_addr = (self.disk_addr & 0xff00ff) | ((v as u32) << 8);
+                return;
+            }
+            if addr == DISK_A2 {
+                self.disk_addr = (self.disk_addr & 0x00ffff) | ((v as u32) << 16);
                 return;
             }
             if addr == TIMER_LO {
@@ -1312,6 +1481,62 @@ mod bubble {
 
 // @@NEXT-MODULE@@
 
+// ===========================================================================
+// pack: упаковщик видео. Берёт текст, выдаёт байты. Байты берут слово "кадр" и уходят.
+// (чертёж №10: формат BAV1 и путь кадра до экрана)
+// ===========================================================================
+mod pack {
+    use bus::VID_H;
+    use bus::VID_W;
+
+    /// Пакует BADAPPLE-ASC в BAV1: заголовок 10 байт, дальше на каждый кадр пары (сколько, чем).
+    pub fn pack(text: &str) -> Result<Vec<u8>, String> {
+        let mut lines = text.lines();
+        let head = match lines.next() {
+            Some(h) => h,
+            None => return Err("пусто".to_string()),
+        };
+        let f: Vec<&str> = head.split_whitespace().collect();
+        if f.len() != 6 || f[0] != "BADAPPLE-ASC" {
+            return Err(format!("странный заголовок: {}", head));
+        }
+        let w: usize = f[2].parse().map_err(|_| "ширина".to_string())?;
+        let h: usize = f[3].parse().map_err(|_| "высота".to_string())?;
+        let fps: usize = f[4].parse().map_err(|_| "fps".to_string())?;
+        let n: usize = f[5].parse().map_err(|_| "кадры".to_string())?;
+        if w != VID_W || h != VID_H {
+            return Err(format!("видеокарта {}x{}, а в файле {}x{}", VID_W, VID_H, w, h));
+        }
+        if n > 65535 {
+            return Err("кадров больше 65535".to_string());
+        }
+        let mut out: Vec<u8> = vec![b'B', b'A', b'V', b'1', w as u8, h as u8, fps as u8, 0];
+        out.push((n & 0xff) as u8);
+        out.push((n >> 8) as u8);
+        for _ in 0..n {
+            let mut cells: Vec<u8> = Vec::with_capacity(w * h);
+            for _ in 0..h {
+                match lines.next() {
+                    Some(l) if l.len() == w => cells.extend(l.bytes()),
+                    _ => return Err("битая строка кадра".to_string()),
+                }
+            }
+            let mut i = 0;
+            while i < cells.len() {
+                let c = cells[i];
+                let mut run = 1;
+                while i + run < cells.len() && cells[i + run] == c && run < 255 {
+                    run += 1;
+                }
+                out.push(run as u8);
+                out.push(c);
+                i += run;
+            }
+        }
+        Ok(out)
+    }
+}
+
 // @@SELFTEST@@
 const SELFTEST: &'static str = r#"
     ldi sp, 0xE000
@@ -1473,6 +1698,44 @@ s_soft: .str "int2\n"
 s_ticks: .str "ticks ok\n"
 "#;
 
+const PLAYER: &'static str = r#"
+    ldi sp, 0xE000
+    ldi r1, 0xFF30
+    ldi r0, 0
+    stb [r1+0], r0
+    stb [r1+1], r0
+    stb [r1+2], r0
+    ldi r2, 0xFF33
+    ldi r4, 8
+skip:
+    ldb r1, [r2+0]
+    addi r4, r4, -1
+    jnz r4, skip
+    ldb r6, [r2+0]
+    ldb r1, [r2+0]
+    shl r1, r1, 8
+    or r6, r6, r1
+frame_loop:
+    ldi r5, 0xF000
+    ldi r4, 0xF600
+run_loop:
+    ldb r0, [r2+0]
+    ldb r1, [r2+0]
+fill:
+    stb [r5+0], r1
+    addi r5, r5, 1
+    addi r0, r0, -1
+    jnz r0, fill
+    cmp r5, r4
+    jlt run_loop
+    ldi r3, 0xFF20
+    ldi r0, 1
+    stb [r3+0], r0
+    addi r6, r6, -1
+    jnz r6, frame_loop
+    hlt
+"#;
+
 const HELLO: &'static str = "
     ldi sp, 0xE000
     ldi r0, msg
@@ -1495,15 +1758,59 @@ wait:
 msg: .str \"Hello, World!\\n\"
 ";
 
+fn read_file(path: &str) -> Vec<u8> {
+    let mut v = Vec::new();
+    std::io::Read::read_to_end(&mut std::fs::File::open(path).unwrap(), &mut v).unwrap();
+    v
+}
+
 fn main() {
     // прогреваем бесполезности, чтобы потом не было стыдно
     let _ = bubble::run_all();
+    let args: Vec<String> = std::env::args().collect();
+
+    if let Some(i) = args.iter().position(|a| a == "--pack") {
+        let text = String::from_utf8(read_file(&args[i + 1])).unwrap();
+        let out = match pack::pack(&text) {
+            Ok(o) => o,
+            Err(e) => {
+                writeln!(std::io::stderr(), "упаковщик сломался: {}", e).unwrap();
+                std::process::exit(1);
+            }
+        };
+        std::fs::File::create(&args[i + 2]).unwrap().write_all(&out).unwrap();
+        writeln!(std::io::stderr(), "упаковано: {} байт", out.len()).unwrap();
+        return;
+    }
+
+    let selftest = args.iter().any(|a| a == "--selftest");
+    let play_at = args.iter().position(|a| a == "--play");
+    let play = play_at.is_some();
+    let from_file: Option<String> = match args.iter().position(|a| a == "--asm") {
+        Some(i) => Some(String::from_utf8(read_file(&args[i + 1])).unwrap()),
+        None => None,
+    };
+    let source: &str = match from_file {
+        Some(ref t) => &t[..],
+        None => {
+            if play {
+                PLAYER
+            } else if selftest {
+                SELFTEST
+            } else {
+                HELLO
+            }
+        }
+    };
     let delay: u64 = match std::env::var("HELLO_DELAY_MS") {
         Ok(s) => s.parse().unwrap_or(40),
         Err(_) => 40,
     };
-    let selftest = std::env::args().any(|a| a == "--selftest");
-    let image = match asm::assemble(if selftest { SELFTEST } else { HELLO }) {
+    let fps: u64 = match std::env::var("HELLO_FPS") {
+        Ok(s) => s.parse().unwrap_or(15),
+        Err(_) => 15,
+    };
+    let image = match asm::assemble(source) {
         Ok(i) => i,
         Err(e) => {
             writeln!(std::io::stderr(), "assembler error: {}", e).unwrap();
@@ -1513,18 +1820,28 @@ fn main() {
     let mut bus = bus::Bus::new(delay);
     bus.load();
     bus.reset(&image);
+    bus.set_fps(fps);
+    if let Some(i) = play_at {
+        let path = match args.get(i + 1) {
+            Some(p) if !p.starts_with("--") => p.clone(),
+            _ => "assets/badapple.bav".to_string(),
+        };
+        bus.attach_disk(read_file(&path));
+    }
+    let limit: u64 = if play { std::u64::MAX } else { 10_000_000 };
     let mut cpu = cpu::Cpu::new();
-    while !cpu.halted && cpu.cycles < 10_000_000 {
+    while !cpu.halted && cpu.cycles < limit {
         cpu.step(&mut bus);
     }
+    bus.finish();
     writeln!(
         std::io::stderr(),
-        "[halted after {} cycles, {} bus clocks, {} bytes sent]",
+        "[halted after {} cycles, {} bus clocks, {} bytes sent, {} frames]",
         cpu.cycles,
         bus.clock,
-        bus.uart.sent
-    )
-    .unwrap();
+        bus.uart.sent,
+        bus.video.frames
+    ).unwrap();
 }
 
 #[cfg(test)]
