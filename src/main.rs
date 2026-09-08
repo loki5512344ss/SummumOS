@@ -717,6 +717,7 @@ mod asm {
 // ===========================================================================
 mod bus {
     use std::io;
+    use std::io::Read;
     use std::io::Write;
     use std::process::Child;
     use std::process::ChildStdin;
@@ -728,6 +729,7 @@ mod bus {
 
     pub const UART_TX: u16 = 0xFF00;
     pub const UART_ST: u16 = 0xFF01;
+    pub const UART_RX: u16 = 0xFF03;
     pub const TIMER_LO: u16 = 0xFF10;
     pub const TIMER_HI: u16 = 0xFF11;
     pub const TIMER_CTL: u16 = 0xFF12;
@@ -811,6 +813,7 @@ mod bus {
         sink: Sink,
         disk: Vec<u8>,
         disk_addr: u32,
+        input: Option<(Vec<u8>, usize)>,
         pub clock: u64,
     }
 
@@ -847,6 +850,7 @@ mod bus {
                 sink: Sink::Off,
                 disk: Vec::new(),
                 disk_addr: 0,
+                input: None,
                 clock: 0,
             }
         }
@@ -858,6 +862,28 @@ mod bus {
 
         pub fn take_captured(&mut self) -> Vec<u8> {
             self.uart.captured.take().unwrap_or(Vec::new())
+        }
+
+        /// Подсовывает вместо клавиатуры готовый текст. Для тестов и для ленивых.
+        pub fn feed_input(&mut self, text: Vec<u8>) {
+            self.input = Some((text, 0));
+        }
+
+        /// Ждёт, пока человек нажмёт кнопку. Если не нажмёт -- ждёт дальше. Конец ввода это ноль.
+        fn read_input(&mut self) -> u8 {
+            if let Some(ref mut inp) = self.input {
+                if inp.1 < inp.0.len() {
+                    let b = inp.0[inp.1];
+                    inp.1 += 1;
+                    return b;
+                }
+                return 0;
+            }
+            let mut b = [0u8; 1];
+            match io::stdin().read(&mut b) {
+                Ok(1) => b[0],
+                _ => 0,
+            }
         }
 
         pub fn attach_disk(&mut self, image: Vec<u8>) {
@@ -1080,6 +1106,9 @@ mod bus {
             }
             if addr == UART_ST {
                 return if self.uart.busy > 0 { 1 } else { 0 };
+            }
+            if addr == UART_RX {
+                return self.read_input();
             }
             if addr >= PSG_BASE && addr <= PSG_LAST {
                 return self.psg.regs[(addr - PSG_BASE) as usize];
@@ -5226,7 +5255,7 @@ local function compile(src)
     local cur = {}
     local data = {}
     local strings = {}
-    local globals, funcs = {}, { putchar = { ret = T("int") } }
+    local globals, funcs = {}, { putchar = { ret = T("int") }, getchar = { ret = T("int") } }
     local scopes, fsize, retlabel = {}, 0, nil
     local loops = {}
     local nlabel = 0
@@ -5351,7 +5380,7 @@ local function compile(src)
             elseif c == 13 then parts[#parts + 1] = "\\r"
             elseif c == 92 then parts[#parts + 1] = "\\\\"
             elseif c == 34 then parts[#parts + 1] = '\\"'
-            elseif c >= 32 and c < 127 then parts[#parts + 1] = string.char(c)
+            elseif c >= 32 and c ~= 127 then parts[#parts + 1] = string.char(c)
             else error("в строке нельзя символ с кодом " .. c, 0) end
         end
         data[#data + 1] = l .. ": .str \"" .. table.concat(parts) .. "\""
@@ -5881,6 +5910,10 @@ local function compile(src)
         "    stb [r2+0], r1",
         "    pop r6",
         "    ret",
+        "f_getchar:",
+        "    ldi r2, 0xFF03",
+        "    ldb r0, [r2+0]",
+        "    ret",
     }
     for _, l in ipairs(cur) do asm[#asm + 1] = l end
     for _, l in ipairs(data) do asm[#asm + 1] = l end
@@ -6022,6 +6055,236 @@ fn quine_main() -> i32 {
     say(SELF_SRC.starts_with("// ===="), "main.rs прочитал сам себя и начинается как положено");
     if ok { 0 } else { 1 }
 }
+
+/// Шахматы. Написаны на C плохо и нарочно, потому что человек сказал "ещё какой-нибудь говнокод".
+const CHESS_C: &'static str = r####"/* ШАХМАТЫ v0.3 (рабочие). Писал в 3 ночи, кофе кончился.
+   Не трогать, оно как-то работает. Что такое "рокировка" -- не знаю.
+   Ход вводить так: e2e4. Выход: пустая строка или Ctrl+D. */
+
+char board[64];     /* доска, 8 на 8, одним куском, потому что так проще */
+char line[16];      /* сюда падает то, что набрал игрок */
+int turn;           /* 0 - белые, 1 - чёрные. Других не бывает */
+int game_over;
+int fx; int fy; int tx; int ty;   /* откуда и куда. Глобальные, чтобы не таскать */
+int moves_done;
+
+/* ---- всякая мелочь ---- */
+char get(int x, int y) { return board[y * 8 + x]; }
+
+void put(int x, int y, char c) { board[y * 8 + x] = c; }
+
+int is_white(char p) { if (p >= 65 && p <= 90) return 1; return 0; }
+
+int is_black(char p) { if (p >= 97 && p <= 122) return 1; return 0; }
+
+int abs_(int a) { if (a < 0) return 0 - a; return a; }
+
+int sgn(int a) {
+    if (a > 0) return 1;
+    if (a < 0) return 0 - 1;
+    return 0;
+}
+
+/* ---- расстановка. Копипаста, зато видно что где ---- */
+void setup() {
+    int i;
+    for (i = 0; i < 64; i++) board[i] = 46;
+    put(0, 0, 'R'); put(1, 0, 'N'); put(2, 0, 'B'); put(3, 0, 'Q');
+    put(4, 0, 'K'); put(5, 0, 'B'); put(6, 0, 'N'); put(7, 0, 'R');
+    put(0, 7, 'r'); put(1, 7, 'n'); put(2, 7, 'b'); put(3, 7, 'q');
+    put(4, 7, 'k'); put(5, 7, 'b'); put(6, 7, 'n'); put(7, 7, 'r');
+    for (i = 0; i < 8; i++) {
+        put(i, 1, 'P');
+        put(i, 6, 'p');
+    }
+}
+
+/* ---- рисуем доску. Каждая фигура отдельным if, а что ---- */
+void show() {
+    int x; int y; char p;
+    putnl();
+    for (y = 7; y >= 0; y--) {
+        putchar(49 + y);
+        putchar(32);
+        for (x = 0; x < 8; x++) {
+            p = get(x, y);
+            if (p == 46) print("· ");
+            else if (p == 'P') print("♙ ");
+            else if (p == 'N') print("♘ ");
+            else if (p == 'B') print("♗ ");
+            else if (p == 'R') print("♖ ");
+            else if (p == 'Q') print("♕ ");
+            else if (p == 'K') print("♔ ");
+            else if (p == 'p') print("♟ ");
+            else if (p == 'n') print("♞ ");
+            else if (p == 'b') print("♝ ");
+            else if (p == 'r') print("♜ ");
+            else if (p == 'q') print("♛ ");
+            else if (p == 'k') print("♚ ");
+            else print("? ");
+        }
+        putnl();
+    }
+    print("  a b c d e f g h");
+    putnl();
+}
+
+/* ---- можно ли пройти от (x1,y1) до (x2,y2), не перепрыгивая через других ---- */
+int path_clear(int x1, int y1, int x2, int y2) {
+    int dx; int dy; int x; int y;
+    dx = sgn(x2 - x1);
+    dy = sgn(y2 - y1);
+    x = x1 + dx;
+    y = y1 + dy;
+    while (x != x2 || y != y2) {
+        if (get(x, y) != 46) return 0;
+        x = x + dx;
+        y = y + dy;
+    }
+    return 1;
+}
+
+/* ---- ходы фигур. Каждая функция своя. Да, похожи. Нет, объединять не буду ---- */
+int pawn_ok(int white) {
+    int dir; int start; char t;
+    t = get(tx, ty);
+    if (white) { dir = 1; start = 1; } else { dir = 0 - 1; start = 6; }
+    if (fx == tx && t == 46) {
+        if (ty == fy + dir) return 1;
+        if (fy == start && ty == fy + dir + dir && get(fx, fy + dir) == 46) return 1;
+        return 0;
+    }
+    if (abs_(tx - fx) == 1 && ty == fy + dir && t != 46) return 1;
+    return 0;
+}
+
+int knight_ok() {
+    int dx; int dy;
+    dx = abs_(tx - fx);
+    dy = abs_(ty - fy);
+    if (dx == 1 && dy == 2) return 1;
+    if (dx == 2 && dy == 1) return 1;
+    return 0;
+}
+
+int rook_ok() {
+    if (fx == tx || fy == ty) {
+        if (path_clear(fx, fy, tx, ty)) return 1;
+    }
+    return 0;
+}
+
+int bishop_ok() {
+    if (abs_(tx - fx) == abs_(ty - fy)) {
+        if (path_clear(fx, fy, tx, ty)) return 1;
+    }
+    return 0;
+}
+
+int queen_ok() {
+    /* тут могла быть красивая реализация через ладью и слона, но мы пойдём другим путём */
+    if (fx == tx || fy == ty) {
+        if (path_clear(fx, fy, tx, ty)) return 1;
+    }
+    if (abs_(tx - fx) == abs_(ty - fy)) {
+        if (path_clear(fx, fy, tx, ty)) return 1;
+    }
+    return 0;
+}
+
+int king_ok() {
+    if (abs_(tx - fx) <= 1 && abs_(ty - fy) <= 1) return 1;
+    return 0;
+}
+
+/* ---- главная проверка. Если вернула 1 -- ходим ---- */
+int move_ok() {
+    char p; char t;
+    p = get(fx, fy);
+    t = get(tx, ty);
+    if (p == 46) return 0;
+    if (turn == 0 && is_black(p)) return 0;
+    if (turn == 1 && is_white(p)) return 0;
+    if (fx == tx && fy == ty) return 0;
+    if (turn == 0 && is_white(t)) return 0;
+    if (turn == 1 && is_black(t)) return 0;
+    if (p == 'P') return pawn_ok(1);
+    if (p == 'p') return pawn_ok(0);
+    if (p == 'N' || p == 'n') return knight_ok();
+    if (p == 'R' || p == 'r') return rook_ok();
+    if (p == 'B' || p == 'b') return bishop_ok();
+    if (p == 'Q' || p == 'q') return queen_ok();
+    if (p == 'K' || p == 'k') return king_ok();
+    return 0;
+}
+
+/* ---- читаем строку с клавиатуры. 2 - ввод кончился, 0 - непонятно, 1 - ход ---- */
+int read_move() {
+    int c; int n;
+    n = 0;
+    c = getchar();
+    while (c != 10 && c != 0) {
+        if (n < 15) { line[n] = c; n++; }
+        c = getchar();
+    }
+    line[n] = 0;
+    if (n == 0) return 2;
+    if (n != 4) return 0;
+    fx = line[0] - 97;
+    fy = line[1] - 49;
+    tx = line[2] - 97;
+    ty = line[3] - 49;
+    if (fx < 0 || fx > 7 || fy < 0 || fy > 7) return 0;
+    if (tx < 0 || tx > 7 || ty < 0 || ty > 7) return 0;
+    return 1;
+}
+
+int main() {
+    int r; char p; char t;
+    setup();
+    turn = 0;
+    game_over = 0;
+    moves_done = 0;
+    print("ШАХМАТЫ. Ход вводится так: e2e4. Пустая строка - выход.");
+    putnl();
+    while (game_over == 0) {
+        show();
+        if (turn == 0) print("Ход белых > "); else print("Ход чёрных > ");
+        r = read_move();
+        if (r == 2) {
+            print("Ввода больше нет. Расходимся.");
+            putnl();
+            return 0;
+        }
+        if (r == 0) {
+            print("Не понял ход.");
+            putnl();
+        } else if (move_ok() == 0) {
+            print("Так ходить нельзя.");
+            putnl();
+        } else {
+            p = get(fx, fy);
+            t = get(tx, ty);
+            put(tx, ty, p);
+            put(fx, fy, 46);
+            if (p == 'P' && ty == 7) put(tx, ty, 'Q');
+            if (p == 'p' && ty == 0) put(tx, ty, 'q');
+            if (t == 'k') game_over = 1;
+            if (t == 'K') game_over = 2;
+            moves_done++;
+            turn = 1 - turn;
+        }
+    }
+    show();
+    if (game_over == 1) print("Король чёрных съеден. Белые победили!");
+    else print("Король белых съеден. Чёрные победили!");
+    putnl();
+    print("Ходов сделано: ");
+    print_num(moves_done);
+    putnl();
+    return 0;
+}
+"####;
 
 // @@SELFTEST@@
 const SELFTEST: &'static str = r#"
@@ -6359,6 +6622,17 @@ fn main() {
         std::process::exit(h.join().unwrap());
     }
 
+    let chess = args.iter().any(|a| a == "--chess");
+    if chess {
+        match compile_c_big(CHESS_C.as_bytes().to_vec()) {
+            Ok(a) => c_asm = Some(a),
+            Err(e) => {
+                writeln!(std::io::stderr(), "компилятор C: {}", e).unwrap();
+                std::process::exit(1);
+            }
+        }
+    }
+
     let selftest = args.iter().any(|a| a == "--selftest");
     let play_at = args.iter().position(|a| a == "--play");
     let play = play_at.is_some();
@@ -6380,9 +6654,13 @@ fn main() {
             }
         }
     };
-    let delay: u64 = match std::env::var("HELLO_DELAY_MS") {
-        Ok(s) => s.parse().unwrap_or(40),
-        Err(_) => 40,
+    let delay: u64 = if chess {
+        0
+    } else {
+        match std::env::var("HELLO_DELAY_MS") {
+            Ok(s) => s.parse().unwrap_or(40),
+            Err(_) => 40,
+        }
     };
     let fps: u64 = match std::env::var("HELLO_FPS") {
         Ok(s) => s.parse().unwrap_or(15),
@@ -6506,6 +6784,29 @@ mod lua_tests {
             assert_eq!(text(eval("local k, v = string.match('key=value', '(%w+)=(%w+)') return v .. k")), "valuekey");
             assert_eq!(text(eval("local r = {} for w in string.gmatch('a bb ccc', '%a+') do r[#r + 1] = #w end return table.concat(r, ',')")), "1,2,3");
             assert_eq!(text(eval("local ok, e = pcall(function() error('x', 0) end) return tostring(ok) .. e")), "falsex");
+        });
+    }
+
+    #[test]
+    fn chess_plays_a_scripted_game() {
+        run_big(|| {
+            let asm_text = ::compile_c(::CHESS_C.as_bytes()).ok().unwrap();
+            let image = asm::assemble(&asm_text).ok().unwrap();
+            let mut bus = bus::Bus::new(0);
+            bus.load();
+            bus.reset(&image);
+            bus.capture_uart();
+            // e2e4 e7e5, потом нелепость, потом ход чужой фигурой, потом быстрая победа ферзём
+            bus.feed_input(b"e2e4\ne7e5\ne2e4\nd1h5\nb8c6\nf1c4\ng8f6\nh5f7\na7a6\nf7e8\n\n".to_vec());
+            let mut cpu = cpu::Cpu::new();
+            while !cpu.halted && cpu.cycles < 200_000_000 {
+                cpu.step(&mut bus);
+            }
+            assert!(cpu.halted);
+            let out = String::from_utf8_lossy(&bus.take_captured()).to_string();
+            assert!(out.contains("Так ходить нельзя."), "{}", out);
+            assert!(out.contains("Король чёрных съеден. Белые победили!"), "{}", out);
+            assert!(out.contains("Ходов сделано: 9"), "{}", out);
         });
     }
 
