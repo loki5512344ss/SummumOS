@@ -5248,6 +5248,462 @@ end
 
 local function T(b, p, arr) return { b = b, p = p or 0, arr = arr } end
 
+-- ---- peephole: чистим за собой. Наш компилятор честно кладёт всё в стек, а мы потом
+-- ---- делаем вид, что так и было задумано (и код становится вдвое короче и быстрее).
+local function pl_parse(s)
+    if s:sub(1, 4) ~= "    " then return { label = s:sub(1, -2) } end
+    local op, rest = s:match("^    (%S+) ?(.*)$")
+    local args = {}
+    for a in rest:gmatch("[^, ]+") do args[#args + 1] = a end
+    return { op = op, args = args }
+end
+
+local function pl_fmt(i)
+    if i.label then return i.label .. ":" end
+    local s = "    " .. i.op
+    if #i.args > 0 then s = s .. " " .. table.concat(i.args, ", ") end
+    return s
+end
+
+local function pl_is(i, op, a1, a2, a3)
+    if not i or i.label or i.op ~= op then return false end
+    if a1 and i.args[1] ~= a1 then return false end
+    if a2 and i.args[2] ~= a2 then return false end
+    if a3 and i.args[3] ~= a3 then return false end
+    return true
+end
+
+-- [reg+off] -> reg, off
+local function pl_mem(a)
+    if not a then return nil end
+    return a:match("^%[(%w+)%+(.*)%]$")
+end
+
+local PL_JUMPS = { jmp = true, jz = true, jnz = true, je = true, jne = true, jlt = true, jge = true }
+local PL_INV = { jz = "jnz", jnz = "jz", je = "jne", jne = "je", jlt = "jge", jge = "jlt" }
+
+local function pl_isjump(i) return i and not i.label and PL_JUMPS[i.op] end
+local function pl_target(i) return i.args[#i.args] end
+
+local function pl_refs(L)
+    local r = {}
+    for _, i in ipairs(L) do
+        if pl_isjump(i) then
+            local t = pl_target(i)
+            r[t] = (r[t] or 0) + 1
+        end
+    end
+    return r
+end
+
+local function pl_ren(a, to)
+    if a == "r0" then return to end
+    if a:sub(1, 4) == "[r0+" then return "[" .. to .. "+" .. a:sub(5) end
+    return a
+end
+local function pl_ren01(a) return pl_ren(a, "r1") end
+
+local function pl_renins(s, to)
+    local na = {}
+    for q, x in ipairs(s.args) do na[q] = pl_ren(x, to) end
+    return { op = s.op, args = na }
+end
+
+-- команда считает r0 с нуля, не глядя на старое r0
+local function pl_indep(i)
+    if i.label then return false end
+    if i.op == "ldi" or (i.op == "addi" and i.args[2] == "r6") then return true end
+    if (i.op == "ld" or i.op == "ldb") then
+        local r = pl_mem(i.args[2])
+        return r == "r6" or r == "r5"
+    end
+    return false
+end
+
+-- между парой push/pop: ищем парный pop (на том же уровне стека), возвращаем индекс и "чистоту" (нет записей и вызовов)
+local function pl_match(L, from)
+    local depth, j, pure = 1, from, true
+    while L[j] do
+        local x = L[j]
+        if not x.label then
+            if x.op == "push" then depth = depth + 1
+            elseif x.op == "pop" then depth = depth - 1
+            elseif x.op == "addi" and x.args[1] == "sp" and x.args[2] == "sp" then
+                depth = depth - math.floor(tonumber(x.args[3]) / 2)
+            elseif x.op == "call" or x.op == "st" or x.op == "stb" then pure = false end
+            if depth == 0 then return j, pure end
+        end
+        j = j + 1
+    end
+    return nil, pure
+end
+
+-- команда "простая": трогает только r0 и r6, без стека, вызовов и переходов
+local function pl_simple(i)
+    if i.label then return false end
+    local o = i.op
+    if o ~= "ldi" and o ~= "ld" and o ~= "ldb" and o ~= "addi" then return false end
+    for k, a in ipairs(i.args) do
+        if k == 1 and a ~= "r0" then return false end
+        if k > 1 then
+            local r = pl_mem(a)
+            if r then
+                if r ~= "r0" and r ~= "r6" and r ~= "r5" then return false end
+            elseif a:match("^r%d$") or a == "sp" then
+                if a ~= "r0" and a ~= "r6" then return false end
+            end
+        end
+    end
+    return true
+end
+
+local function pl_pass1(L)
+    local O, ch, i = {}, false, 1
+    local n = #L
+    while i <= n do
+        local a, b = L[i], L[i + 1]
+        local o = a.op
+        -- addi r0,r6,N ; ld r0,[r0+0]  ->  ld r0,[r6+N]
+        if o ~= "addi" and o ~= "ldi" and o ~= "push" then
+            O[#O + 1] = a; i = i + 1
+        elseif pl_is(a, "addi") and a.args[2] == "r6" and b and not b.label and (b.op == "ld" or b.op == "ldb")
+            and b.args[1] == a.args[1] and b.args[2] == "[" .. a.args[1] .. "+0]" then
+            O[#O + 1] = { op = b.op, args = { a.args[1], "[r6+" .. a.args[3] .. "]" } }
+            i = i + 2; ch = true
+        -- ldi r0,A ; ldi r1,B ; add/sub/mul r0,r0,r1  ->  ldi r0,A op B
+        elseif pl_is(a, "ldi", "r0") and pl_is(b, "ldi", "r1") and tonumber(a.args[2]) and tonumber(b.args[2])
+            and L[i + 2] and (pl_is(L[i + 2], "add", "r0", "r0", "r1") or pl_is(L[i + 2], "sub", "r0", "r0", "r1") or pl_is(L[i + 2], "mul", "r0", "r0", "r1")) then
+            local x, y, o = tonumber(a.args[2]), tonumber(b.args[2]), L[i + 2].op
+            local v = (o == "add") and (x + y) or ((o == "sub") and (x - y) or (x * y))
+            O[#O + 1] = { op = "ldi", args = { "r0", tostring(math.floor(v % 65536)) } }
+            i = i + 3; ch = true
+        -- ldi r0,G_x ; ld r0,[r0+0]  ->  ld r0,[r5+G_x]   (r5 всегда ноль)
+        elseif pl_is(a, "ldi") and a.args[2]:sub(1, 2) == "G_" and b and not b.label
+            and (b.op == "ld" or b.op == "ldb") and b.args[1] == a.args[1] and b.args[2] == "[" .. a.args[1] .. "+0]" then
+            O[#O + 1] = { op = b.op, args = { a.args[1], "[r5+" .. a.args[2] .. "]" } }
+            i = i + 2; ch = true
+        -- ldi r0,G_x ; mov r1,r0 ; ld r0,[r1+0] ; addi r2,r0,K ; st [r1+0],r2
+        elseif pl_is(a, "ldi", "r0") and a.args[2]:sub(1, 2) == "G_" and pl_is(b, "mov", "r1", "r0")
+            and L[i + 2] and (pl_is(L[i + 2], "ld", "r0", "[r1+0]") or pl_is(L[i + 2], "ldb", "r0", "[r1+0]"))
+            and pl_is(L[i + 3], "addi", "r2", "r0")
+            and (pl_is(L[i + 4], "st", "[r1+0]", "r2") or pl_is(L[i + 4], "stb", "[r1+0]", "r2")) then
+            local ld, st = L[i + 2], L[i + 4]
+            O[#O + 1] = { op = ld.op, args = { "r0", "[r5+" .. a.args[2] .. "]" } }
+            O[#O + 1] = L[i + 3]
+            O[#O + 1] = { op = st.op, args = { "[r5+" .. a.args[2] .. "]", "r2" } }
+            i = i + 5; ch = true
+        -- push r0 ; <простое> ; mov r1,r0 ; pop r0  ->  <простое в r1>
+        elseif pl_is(a, "push", "r0") then
+            local j = i + 1
+            while L[j] and pl_simple(L[j]) do j = j + 1 end
+            if j > i + 1 and pl_is(L[j], "mov", "r1", "r0") and pl_is(L[j + 1], "pop", "r0") then
+                for k = i + 1, j - 1 do
+                    local s = L[k]
+                    local na = {}
+                    for q, x in ipairs(s.args) do na[q] = pl_ren01(x) end
+                    O[#O + 1] = { op = s.op, args = na }
+                end
+                i = j + 2; ch = true
+            else
+                O[#O + 1] = a; i = i + 1
+            end
+        -- addi r0,r6,N ; mov r1,r0 ; ld r0,[r1+0] ; addi r2,r0,K ; st [r1+0],r2  (это i++)
+        elseif pl_is(a, "addi", "r0", "r6") and pl_is(b, "mov", "r1", "r0")
+            and L[i + 2] and (pl_is(L[i + 2], "ld", "r0", "[r1+0]") or pl_is(L[i + 2], "ldb", "r0", "[r1+0]"))
+            and pl_is(L[i + 3], "addi", "r2", "r0")
+            and (pl_is(L[i + 4], "st", "[r1+0]", "r2") or pl_is(L[i + 4], "stb", "[r1+0]", "r2")) then
+            local ld, st = L[i + 2], L[i + 4]
+            O[#O + 1] = { op = ld.op, args = { "r0", "[r6+" .. a.args[3] .. "]" } }
+            O[#O + 1] = L[i + 3]
+            O[#O + 1] = { op = st.op, args = { "[r6+" .. a.args[3] .. "]", "r2" } }
+            i = i + 5; ch = true
+        -- ldi r1,X ; add r0,r1,r0 ; ld/ldb r0,[r0+0]  ->  ld/ldb r0,[r0+X]
+        elseif pl_is(a, "ldi", "r1") and pl_is(b, "add", "r0", "r1", "r0") and L[i + 2] and not L[i + 2].label
+            and (L[i + 2].op == "ld" or L[i + 2].op == "ldb") and L[i + 2].args[1] == "r0" and L[i + 2].args[2] == "[r0+0]" then
+            O[#O + 1] = { op = L[i + 2].op, args = { "r0", "[r0+" .. a.args[2] .. "]" } }
+            i = i + 3; ch = true
+        -- addi r1,r6,N ; add r0,r1,r0 ; ld/ldb r0,[r0+0]  ->  add r0,r0,r6 ; ld/ldb r0,[r0+N]
+        elseif pl_is(a, "addi", "r1", "r6") and pl_is(b, "add", "r0", "r1", "r0") and L[i + 2] and not L[i + 2].label
+            and (L[i + 2].op == "ld" or L[i + 2].op == "ldb") and L[i + 2].args[1] == "r0" and L[i + 2].args[2] == "[r0+0]" then
+            O[#O + 1] = { op = "add", args = { "r0", "r0", "r6" } }
+            O[#O + 1] = { op = L[i + 2].op, args = { "r0", "[r0+" .. a.args[3] .. "]" } }
+            i = i + 3; ch = true
+        -- ldi r1,K ; cmp r0,r1  ->  cmpi r0,K
+        elseif pl_is(a, "ldi", "r1") and pl_is(b, "cmp", "r0", "r1") and a.args[2]:match("^%d+$") then
+            O[#O + 1] = { op = "cmpi", args = { "r0", a.args[2] } }
+            i = i + 2; ch = true
+        else
+            O[#O + 1] = a; i = i + 1
+        end
+    end
+    return O, ch
+end
+
+-- адрес закинули в стек, посчитали значение, достали: переставляем местами, стек не нужен
+local function pl_pass2(L)
+    local O, ch, i = {}, false, 1
+    local n = #L
+    while i <= n do
+        local p, q = L[i], L[i + 1]
+        local done = false
+        local kind = nil
+        if p and not p.label and q and q.op == "push" then
+            if pl_is(p, "addi", "r0", "r6") or pl_is(p, "ldi", "r0") then kind = "addr"
+            elseif pl_is(p, "ld", "r0") and (p.args[2] or ""):match("^%[r6%+") then kind = "var" end
+        end
+        if kind and pl_is(q, "push", "r0") then
+            local base = nil
+            if pl_is(p, "addi", "r0", "r6") then base = "[r6+" .. p.args[3] .. "]"
+            elseif pl_is(p, "ldi", "r0") and p.args[2]:sub(1, 2) == "G_" then base = "[r5+" .. p.args[2] .. "]" end
+            local j, pure = pl_match(L, i + 2)
+            -- x op= e :  push r0; S; mov r2,r0; pop r1; push r1; LD r0,[r1+0]; mov r1,r2; OP...; pop r1; ST [r1+0],r0
+            if base and j and pl_is(L[j], "pop", "r1") and pl_is(L[j - 1], "mov", "r2", "r0") and pl_is(L[j + 1], "push", "r1")
+                and L[j + 2] and (pl_is(L[j + 2], "ld", "r0", "[r1+0]") or pl_is(L[j + 2], "ldb", "r0", "[r1+0]"))
+                and pl_is(L[j + 3], "mov", "r1", "r2") then
+                local k = j + 4
+                while L[k] and not pl_is(L[k], "pop", "r1") do k = k + 1 end
+                local st = L[k + 1]
+                if L[k] and st and not st.label and (st.op == "st" or st.op == "stb") and st.args[1] == "[r1+0]" and st.args[2] == "r0" then
+                    for z = i + 2, j - 2 do O[#O + 1] = L[z] end
+                    O[#O + 1] = L[j - 1]
+                    O[#O + 1] = { op = L[j + 2].op, args = { "r0", base } }
+                    O[#O + 1] = L[j + 3]
+                    for z = j + 4, k - 1 do O[#O + 1] = L[z] end
+                    O[#O + 1] = { op = st.op, args = { base, "r0" } }
+                    i = k + 2; ch = true; done = true
+                end
+            end
+            if not done then
+                local c = L[(j or 0) + 1]
+                if j and pl_is(L[j], "pop", "r1") and (kind ~= "var" or pure) and c and not c.label
+                    and (((c.op == "st" or c.op == "stb") and c.args[1] == "[r1+0]" and c.args[2] == "r0")
+                        or pl_is(c, "add", "r0", "r1", "r0")) then
+                    for z = i + 2, j - 1 do O[#O + 1] = L[z] end
+                    if (c.op == "st" or c.op == "stb") and pl_is(p, "addi", "r0", "r6") then
+                        O[#O + 1] = { op = c.op, args = { "[r6+" .. p.args[3] .. "]", "r0" } }
+                    elseif (c.op == "st" or c.op == "stb") and base then
+                        O[#O + 1] = { op = c.op, args = { base, "r0" } }
+                    else
+                        O[#O + 1] = pl_renins(p, "r1")
+                        O[#O + 1] = c
+                    end
+                    i = j + 2; ch = true; done = true
+                end
+            end
+        end
+        if not done then O[#O + 1] = L[i]; i = i + 1 end
+    end
+    return O, ch
+end
+
+-- a OP (сложное): левое простое -- считаем его после правого, push/pop не нужны
+local PL_ARITH = { add = true, sub = true, mul = true, div = true, mod = true, ["and"] = true, ["or"] = true, xor = true }
+local function pl_pass6(L)
+    local O, ch, i = {}, false, 1
+    local n = #L
+    while i <= n do
+        local a = L[i]
+        local done = false
+        if a.op == "push" then
+            -- левая часть: самая последняя цепочка простых команд, что уже лежит в O
+            local k = #O
+            local ok = false
+            while k >= 1 and pl_simple(O[k]) do
+                if pl_indep(O[k]) then ok = true; break end
+                k = k - 1
+            end
+            if ok then
+                local j, pure = pl_match(L, i + 1)
+                if j and pl_is(L[j], "pop", "r0") and pl_is(L[j - 1], "mov", "r1", "r0") and L[j + 1] and not L[j + 1].label
+                    and PL_ARITH[L[j + 1].op] and L[j + 1].args[1] == "r0" and L[j + 1].args[2] == "r0" and L[j + 1].args[3] == "r1" then
+                    local reads = false
+                    for z = k, #O do if O[z].op == "ld" or O[z].op == "ldb" then reads = true end end
+                    if pure or not reads then
+                        local left = {}
+                        for z = k, #O do left[#left + 1] = O[z] end
+                        for z = #O, k, -1 do O[z] = nil end
+                        for z = i + 1, j - 2 do O[#O + 1] = L[z] end
+                        for z = 1, #left do O[#O + 1] = pl_renins(left[z], "r1") end
+                        O[#O + 1] = { op = L[j + 1].op, args = { "r0", "r1", "r0" } }
+                        i = j + 2; ch = true; done = true
+                    end
+                end
+            end
+        end
+        if not done then O[#O + 1] = a; i = i + 1 end
+    end
+    return O, ch
+end
+
+-- запись в массив: адрес = база + индекс, база уезжает прямо в команду st
+local function pl_pass5(L)
+    local O, ch, i = {}, false, 1
+    local n = #L
+    while i <= n do
+        local a, b, c = L[i], L[i + 1], L[i + 2]
+        local done = false
+        local base = nil
+        local o = a.op
+        if o ~= "ldi" and o ~= "addi" and o ~= "push" then
+            -- ничего интересного
+        elseif pl_is(a, "ldi", "r1") and pl_is(b, "add", "r0", "r1", "r0") and pl_is(c, "push", "r0") then
+            base = a.args[2]
+        elseif pl_is(a, "addi", "r1", "r6") and pl_is(b, "add", "r0", "r1", "r0") and pl_is(c, "push", "r0") then
+            base = a.args[3]
+        end
+        if base then
+            local j = pl_match(L, i + 3)
+            local st = L[(j or 0) + 1]
+            if j and pl_is(L[j], "pop", "r1") and st and not st.label and (st.op == "st" or st.op == "stb")
+                and st.args[1] == "[r1+0]" and st.args[2] == "r0" then
+                -- простое значение: mov r1,r0 ; V (в r2) ; st [r1+base],r2
+                local simple = (j > i + 3)
+                for z = i + 3, j - 1 do if not pl_simple(L[z]) then simple = false end end
+                if pl_is(a, "addi", "r1", "r6") then O[#O + 1] = { op = "add", args = { "r0", "r0", "r6" } } end
+                if simple then
+                    O[#O + 1] = { op = "mov", args = { "r1", "r0" } }
+                    for z = i + 3, j - 1 do O[#O + 1] = pl_renins(L[z], "r2") end
+                    O[#O + 1] = { op = st.op, args = { "[r1+" .. base .. "]", "r2" } }
+                else
+                    O[#O + 1] = c
+                    for z = i + 3, j - 1 do O[#O + 1] = L[z] end
+                    O[#O + 1] = L[j]
+                    O[#O + 1] = { op = st.op, args = { "[r1+" .. base .. "]", "r0" } }
+                end
+                i = j + 2; ch = true; done = true
+            end
+        elseif pl_is(a, "push", "r0") then
+            local j = pl_match(L, i + 1)
+            local st = L[(j or 0) + 1]
+            if j and j > i + 1 and pl_is(L[j], "pop", "r1") and st and not st.label and (st.op == "st" or st.op == "stb")
+                and st.args[1] == "[r1+0]" and st.args[2] == "r0" then
+                local simple = true
+                for z = i + 1, j - 1 do if not pl_simple(L[z]) then simple = false end end
+                if simple then
+                    O[#O + 1] = { op = "mov", args = { "r1", "r0" } }
+                    for z = i + 1, j - 1 do O[#O + 1] = pl_renins(L[z], "r2") end
+                    O[#O + 1] = { op = st.op, args = { "[r1+0]", "r2" } }
+                    i = j + 2; ch = true; done = true
+                end
+            end
+        end
+        if not done then O[#O + 1] = a; i = i + 1 end
+    end
+    return O, ch
+end
+
+-- превращение логических значений в прыжки, уборка переходов
+local function pl_pass3(L)
+    local ch = false
+    local refs = pl_refs(L)
+    local O, i, n = {}, 1, #L
+    local redirect = {}
+    while i <= n do
+        local a = L[i]
+        local o = a.op
+        -- ldi r0,A ; jmp Le ; Lf: ; ldi r0,B ; Le: ; jz/jnz r0,X
+        if o ~= "ldi" and o ~= "jmp" and not PL_INV[o] then
+            O[#O + 1] = a; i = i + 1
+        elseif pl_is(a, "ldi", "r0") and a.args[2]:match("^[01]$") and pl_is(L[i + 1], "jmp") and L[i + 2] and L[i + 2].label
+            and pl_is(L[i + 3], "ldi", "r0") and L[i + 3].args[2]:match("^[01]$") and L[i + 3].args[2] ~= a.args[2]
+            and L[i + 4] and L[i + 4].label == L[i + 1].args[1] and refs[L[i + 4].label] == 1
+            and (pl_is(L[i + 5], "jz", "r0") or pl_is(L[i + 5], "jnz", "r0")) then
+            local lf, fin = L[i + 2].label, L[i + 5]
+            local x = fin.args[2]
+            local av = tonumber(a.args[2])
+            local taken = (fin.op == "jz" and av == 0) or (fin.op == "jnz" and av ~= 0)
+            if taken then
+                O[#O + 1] = { op = "jmp", args = { x } }
+                O[#O + 1] = L[i + 2]
+            else
+                redirect[lf] = x
+            end
+            i = i + 6; ch = true
+        -- J L ; jmp X ; L:   ->  inv(J) X ; L:
+        elseif pl_isjump(a) and a.op ~= "jmp" and pl_is(L[i + 1], "jmp") and L[i + 2] and L[i + 2].label == pl_target(a) then
+            local na = {}
+            for k, v in ipairs(a.args) do na[k] = v end
+            na[#na] = L[i + 1].args[1]
+            O[#O + 1] = { op = PL_INV[a.op], args = na }
+            O[#O + 1] = L[i + 2]
+            i = i + 3; ch = true
+        -- jmp L ; L:
+        elseif pl_is(a, "jmp") and L[i + 1] and L[i + 1].label == a.args[1] then
+            i = i + 1; ch = true
+        else
+            O[#O + 1] = a; i = i + 1
+        end
+    end
+    if next(redirect) then
+        for _, x in ipairs(O) do
+            if pl_isjump(x) then
+                local t = pl_target(x)
+                local guard = 0
+                while redirect[t] and guard < 20 do t = redirect[t]; guard = guard + 1 end
+                x.args[#x.args] = t
+            end
+        end
+    end
+    -- метки, на которые никто не прыгает
+    refs = pl_refs(O)
+    local O2 = {}
+    for _, x in ipairs(O) do
+        if x.label and x.label:match("^L%d+$") and not refs[x.label] then ch = true
+        else O2[#O2 + 1] = x end
+    end
+    return O2, ch
+end
+
+-- сравнение с константой: ldi r1,K ; ldi r2,0x8000 ; xor r0 ; xor r1 ; cmp ; jcc  ->  короче
+local function pl_pass4(L)
+    local O, ch, i = {}, false, 1
+    local n = #L
+    while i <= n do
+        local a = L[i]
+        if a.op == "ldi" and pl_is(a, "ldi", "r1") and a.args[2]:match("^%d+$") and pl_is(L[i + 1], "ldi", "r2", "0x8000")
+            and pl_is(L[i + 2], "xor", "r0", "r0", "r2") and pl_is(L[i + 3], "xor", "r1", "r1", "r2") then
+            local k = tonumber(a.args[2]) % 65536
+            local kb = (k + 32768) % 65536
+            local c, j = L[i + 4], L[i + 5]
+            if c and pl_is(c, "cmp", "r0", "r1") and (pl_is(j, "jlt") or pl_is(j, "jge")) then
+                O[#O + 1] = L[i + 1]; O[#O + 1] = L[i + 2]
+                O[#O + 1] = { op = "cmpi", args = { "r0", tostring(kb) } }
+                O[#O + 1] = j
+                i = i + 6; ch = true
+            elseif c and pl_is(c, "cmp", "r1", "r0") and (pl_is(j, "jlt") or pl_is(j, "jge")) and kb < 65535 then
+                O[#O + 1] = L[i + 1]; O[#O + 1] = L[i + 2]
+                O[#O + 1] = { op = "cmpi", args = { "r0", tostring(kb + 1) } }
+                O[#O + 1] = { op = (j.op == "jlt") and "jge" or "jlt", args = j.args }
+                i = i + 6; ch = true
+            else
+                O[#O + 1] = a; i = i + 1
+            end
+        else
+            O[#O + 1] = a; i = i + 1
+        end
+    end
+    return O, ch
+end
+
+local function optimize(lines)
+    local L = {}
+    for _, s in ipairs(lines) do L[#L + 1] = pl_parse(s) end
+    for round = 1, 12 do
+        local c1, c2, c3, c4, c5, c6
+        L, c1 = pl_pass1(L)
+        L, c2 = pl_pass2(L)
+        L, c6 = pl_pass6(L)
+        L, c5 = pl_pass5(L)
+        L, c3 = pl_pass3(L)
+        L, c4 = pl_pass4(L)
+        if not (c1 or c2 or c3 or c4 or c5 or c6) then break end
+    end
+    local out = {}
+    for _, i in ipairs(L) do out[#out + 1] = pl_fmt(i) end
+    return out
+end
+
+
 local function compile(src)
     local toks = lex(PRELUDE .. "\n" .. src)
     -- строки в прелюдии сдвигают номера, ничего страшного
@@ -5834,7 +6290,7 @@ local function compile(src)
         end
         parse_block()
         local body = cur
-        cur = saved
+        cur = {}
         label("f_" .. name)
         emit("push r6")
         emit("mov r6, sp")
@@ -5844,6 +6300,9 @@ local function compile(src)
         emit("mov sp, r6")
         emit("pop r6")
         emit("ret")
+        local fl = optimize(cur)
+        cur = saved
+        for _, l in ipairs(fl) do cur[#cur + 1] = l end
     end
 
     local gdata = {}
@@ -5896,6 +6355,7 @@ local function compile(src)
 
     local asm = {
         "    ldi sp, 0xE000",
+        "    ldi r5, 0",
         "    call f_main",
         "    hlt",
         "f_putchar:",
@@ -6057,231 +6517,1138 @@ fn quine_main() -> i32 {
 }
 
 /// Шахматы. Написаны на C плохо и нарочно, потому что человек сказал "ещё какой-нибудь говнокод".
-const CHESS_C: &'static str = r####"/* ШАХМАТЫ v0.3 (рабочие). Писал в 3 ночи, кофе кончился.
-   Не трогать, оно как-то работает. Что такое "рокировка" -- не знаю.
-   Ход вводить так: e2e4. Выход: пустая строка или Ctrl+D. */
+const CHESS_C: &'static str = r####"/* ШАХМАТЫ v1.0 (теперь по-настоящему). Писал в 3 ночи, но уже в какую-то другую ночь.
+   Раньше тут не было ни шаха, ни мата, ни рокировки -- "что такое рокировка, не знаю".
+   Теперь знаю: король прыгает через ладью, и все делают вид, что так и надо.
 
-char board[64];     /* доска, 8 на 8, одним куском, потому что так проще */
-char line[16];      /* сюда падает то, что набрал игрок */
-int turn;           /* 0 - белые, 1 - чёрные. Других не бывает */
-int game_over;
-int fx; int fy; int tx; int ty;   /* откуда и куда. Глобальные, чтобы не таскать */
-int moves_done;
+   Доска "0x88": 128 клеток, из них настоящих 64, а остальные -- забор.
+   Клетка = ряд * 16 + колонка. Если (клетка & 136) не ноль -- мы свалились с доски.
+   Фигуры: 1 пешка, 2 конь, 3 слон, 4 ладья, 5 ферзь, 6 король; чёрные -- то же плюс 8.
+   Ход упакован в одно число: откуда (7 бит) + куда * 128 + (во кого превратилась пешка) * 16384.
+   Компилятор у нас 16-битный, "/" и "%" без знака, сдвиги медленные, поэтому
+   везде умножаем и делим на степени двойки руками. Красота требует жертв. */
 
-/* ---- всякая мелочь ---- */
-char get(int x, int y) { return board[y * 8 + x]; }
+char b[128];            /* доска, 0x88, а не "8 на 8", как было раньше */
+int pv[1920];           /* цена фигуры p на клетке s лежит в pv[p*128+s] (белые плюс, чёрные минус) */
+int ka[16];             /* 0-7 прыжки коня, 8-15 ходы короля */
+int kg[8];              /* лучи: 0-3 прямые (ладья), 4-7 косые (слон), они же ходы короля */
+char al[256];             /* лежат ли две клетки на одной линии (по разности номеров клеток) */
+int qv[8];               /* сколько стоит съеденная фигура (для отсечения в тихом поиске) */
+char cm[128];            /* какие права на рокировку гибнут, если тронуть эту клетку */
+int ks[2];              /* где короли */
+int pl[32];             /* списки фигур: 0-15 белые, 16-31 чёрные; клетка или 128, если съедена. Так быстрее, чем шарить по всей доске */
+char pi[128];            /* на какой номер в списке указывает фигура, стоящая на клетке */
+int side;               /* кто ходит: 0 белые, 1 чёрные */
+int cas;                /* права на рокировку: 1 белая короткая, 2 белая длинная, 4 чёрная короткая, 8 чёрная длинная */
+int ep;                 /* клетка, через которую проскочила пешка (для взятия на проходе), или -1 */
+int hm;                 /* полуходы без взятий и ходов пешкой (правило 50 ходов) */
+int sc;                 /* оценка позиции для белых, считается на ходу, а не с нуля */
+int sp;                 /* сколько полуходов сделано (он же указатель стека отката) */
 
-void put(int x, int y, char c) { board[y * 8 + x] = c; }
+int h_m[360]; char h_pc[360]; char h_cap[360]; char h_cas[360]; char h_ci[360];
+int h_ep[360]; int h_hm[360]; int h_sc[360];
+int hh1[360]; int hh2[360];     /* отпечатки позиций для троекратного повторения */
+char sh[2880];                  /* записанные ходы в SAN, по 8 байт на полуход */
 
-int is_white(char p) { if (p >= 65 && p <= 90) return 1; return 0; }
+int ml[1300]; int ms[1300];     /* список ходов и их "вкусность"; живут стопкой, ng -- вершина */
+int ng;
+int lg[256]; int lgn;           /* легальные ходы текущей позиции */
 
-int is_black(char p) { if (p >= 97 && p <= 122) return 1; return 0; }
+char line[100];                 /* что набрал игрок */
+int ln;
+char sb[12]; int sbn;           /* сюда складывается запись хода */
+int pm;                         /* найденный ход после разбора */
+int cpu;                        /* за кого играет компьютер: -1 никто, 0 белые, 1 чёрные */
+int over;                       /* 0 игра идёт; 1 мат; 2 пат; 3 50 ходов; 4 нечем мотать; 5 повтор; 6 сдался; 7 устали */
+int resigned;
+int incheck;
+int st_full; int st_side;       /* с какого хода и чьего началась партия (для нумерации) */
+int pc_lo; int pc_hi;           /* счётчик perft: в 16 битах миллионы не живут, считаем по частям */
+int nodes; int budget; int stopf; int allow;
+int rl[256]; int rn;            /* ходы в корне перебора */
 
-int abs_(int a) { if (a < 0) return 0 - a; return a; }
+/* ---- мелочи ---- */
+int file_of(int c) { if (c >= 97 && c <= 104) return c - 97; return 0 - 1; }
+int rank_of(int c) { if (c >= 49 && c <= 56) return c - 49; return 0 - 1; }
 
-int sgn(int a) {
-    if (a > 0) return 1;
-    if (a < 0) return 0 - 1;
+int letter(int ty) {
+    if (ty == 2) return 'N';
+    if (ty == 3) return 'B';
+    if (ty == 4) return 'R';
+    if (ty == 5) return 'Q';
+    if (ty == 6) return 'K';
+    return 'P';
+}
+
+/* тип фигуры по букве: Q R B N в любом регистре, иначе 0 */
+int promo_type(int c) {
+    if (c == 'Q' || c == 'q') return 5;
+    if (c == 'R' || c == 'r') return 4;
+    if (c == 'B' || c == 'b') return 3;
+    if (c == 'N' || c == 'n') return 2;
     return 0;
 }
 
-/* ---- расстановка. Копипаста, зато видно что где ---- */
-void setup() {
+int eq(char *a, char *s) {
     int i;
-    for (i = 0; i < 64; i++) board[i] = 46;
-    put(0, 0, 'R'); put(1, 0, 'N'); put(2, 0, 'B'); put(3, 0, 'Q');
-    put(4, 0, 'K'); put(5, 0, 'B'); put(6, 0, 'N'); put(7, 0, 'R');
-    put(0, 7, 'r'); put(1, 7, 'n'); put(2, 7, 'b'); put(3, 7, 'q');
-    put(4, 7, 'k'); put(5, 7, 'b'); put(6, 7, 'n'); put(7, 7, 'r');
-    for (i = 0; i < 8; i++) {
-        put(i, 1, 'P');
-        put(i, 6, 'p');
+    i = 0;
+    while (a[i] == s[i]) { if (a[i] == 0) return 1; i++; }
+    return 0;
+}
+
+int starts(char *a, char *s) {
+    int i;
+    i = 0;
+    while (s[i]) { if (a[i] != s[i]) return 0; i++; }
+    return 1;
+}
+
+int mn(int a, int c) { if (a < c) return a; return c; }
+
+/* ---- таблицы: цены фигур и "центр лучше края" ---- */
+void init_tables() {
+    int i; int sq; int f; int r; int cf; int cr; int cen; int ty; int v; int rr;
+    kg[0] = 1; kg[1] = 0 - 1; kg[2] = 16; kg[3] = 0 - 16;
+    kg[4] = 15; kg[5] = 0 - 15; kg[6] = 17; kg[7] = 0 - 17;
+    ka[0] = 33; ka[1] = 31; ka[2] = 18; ka[3] = 14;
+    ka[4] = 0 - 33; ka[5] = 0 - 31; ka[6] = 0 - 18; ka[7] = 0 - 14;
+    for (i = 0; i < 8; i++) ka[8 + i] = kg[i];
+    qv[1] = 100; qv[2] = 320; qv[3] = 330; qv[4] = 500; qv[5] = 900; qv[6] = 0;
+    for (i = 0; i < 256; i++) al[i] = 0;
+    for (r = 0 - 7; r <= 7; r++) {
+        for (f = 0 - 7; f <= 7; f++) {
+            if (r == 0 || f == 0 || r == f || r == 0 - f) al[r * 16 + f + 128] = 1;
+        }
+    }
+    for (i = 0; i < 128; i++) cm[i] = 15;
+    cm[4] = 12; cm[7] = 14; cm[0] = 13;      /* e1 h1 a1: гасим биты 3, 1, 2 */
+    cm[116] = 3; cm[119] = 11; cm[112] = 7;  /* e8 h8 a8 */
+    for (sq = 0; sq < 120; sq++) {
+        if (sq & 136) continue;
+        f = sq & 7;
+        for (ty = 1; ty <= 6; ty++) {
+            for (i = 0; i < 2; i++) {
+                r = sq / 16;
+                rr = r;
+                if (i == 1) rr = 7 - r;           /* чёрным доску переворачиваем */
+                cf = mn(f, 7 - f);
+                cr = mn(rr, 7 - rr);
+                cen = cf + cr;
+                v = 0;
+                if (ty == 1) v = 100 + rr * 6 + cf * 3;
+                if (ty == 2) v = 320 + cen * 10;
+                if (ty == 3) v = 330 + cen * 5;
+                if (ty == 4) { v = 500; if (rr == 6) v = 520; }
+                if (ty == 5) v = 900 + cen * 2;
+                if (ty == 6) {
+                    v = 0;
+                    if (rr == 0) v = 15;
+                    if (rr == 0 && (f >= 6 || f <= 2)) v = 25;
+                    v = v + 12 - rr * 8;      /* ходить королём на прогулку не стоит */
+                }
+                if (i == 0) pv[ty * 128 + sq] = v;
+                else pv[(ty + 8) * 128 + sq] = 0 - v;
+            }
+        }
     }
 }
 
-/* ---- рисуем доску. Каждая фигура отдельным if, а что ---- */
-void show() {
-    int x; int y; char p;
-    putnl();
-    for (y = 7; y >= 0; y--) {
-        putchar(49 + y);
-        putchar(32);
-        for (x = 0; x < 8; x++) {
-            p = get(x, y);
-            if (p == 46) print("· ");
-            else if (p == 'P') print("♙ ");
-            else if (p == 'N') print("♘ ");
-            else if (p == 'B') print("♗ ");
-            else if (p == 'R') print("♖ ");
-            else if (p == 'Q') print("♕ ");
-            else if (p == 'K') print("♔ ");
-            else if (p == 'p') print("♟ ");
-            else if (p == 'n') print("♞ ");
-            else if (p == 'b') print("♝ ");
-            else if (p == 'r') print("♜ ");
-            else if (p == 'q') print("♛ ");
-            else if (p == 'k') print("♚ ");
-            else print("? ");
+/* ---- бьёт ли цвет c клетку sq ---- */
+int attacked(int sq, int c) {
+    int i; int d; int s; int p; int col; int ty; int pw;
+    col = c * 8;
+    pw = 1 - c;
+    p = 2 + col;
+    for (i = 0; i != 8; i++) {                 /* кони */
+        s = sq + ka[i];
+        if (!(s & 136) && b[s] == p) return 1;
+    }
+    for (i = 0; i != 8; i++) {                 /* лучи: ладья, слон, ферзь, а вплотную ещё король и пешка */
+        d = kg[i];
+        s = sq + d;
+        while (!(s & 136)) {
+            p = b[s];
+            if (p) {
+                if ((p & 8) == col) {
+                    ty = p & 7;
+                    if (ty == 5) return 1;
+                    if (i & 4) { if (ty == 3) return 1; }
+                    else if (ty == 4) return 1;
+                    if (s == sq + d) {
+                        if (ty == 6) return 1;
+                        if (ty == 1 && (i & 4) && (i & 1) == pw) return 1;
+                    }
+                }
+                break;
+            }
+            s = s + d;
         }
+    }
+    return 0;
+}
+
+/* ---- кладём ход в список ---- */
+void add(int f, int t, int pr) {
+    int v; int c; int m;
+    c = b[t];
+    v = 0;
+    if (c) v = 1000 + (c & 7) * 16 - (b[f] & 7);
+    m = f + t * 128;
+    if (pr) { v = v + pr * 100; m = m + (pr - 1) * 16384; }
+    ml[ng] = m;
+    ms[ng] = v;
+    ng++;
+}
+
+/* ---- все псевдолегальные ходы стороны side; caps=1 -- только взятия и превращения ---- */
+void gen(int caps) {
+    int sq; int ty; int col; int i; int d; int s; int c; int k; int dir; int r;
+    int sr; int lr; int u; int ue; int ie;
+    col = side * 8;
+    dir = 16; sr = 1; lr = 7;
+    if (side) { dir = 0 - 16; sr = 6; lr = 0; }
+    u = side * 16; ue = u + 16;
+    for (; u != ue; u++) {
+        sq = pl[u];
+        if (sq & 128) continue;              /* съеденная фигура */
+        ty = b[sq] & 7;
+        if (ty == 1) {
+            r = sq / 16;
+            s = sq + dir;
+            if (b[s] == 0) {
+                if (s / 16 == lr) {
+                    add(sq, s, 4); add(sq, s, 3); add(sq, s, 2); add(sq, s, 1);
+                } else if (!caps) {
+                    ml[ng] = sq + s * 128; ms[ng] = 0; ng++;          /* тихие ходы пишем прямо тут: вызов функции дорого */
+                    if (r == sr && b[s + dir] == 0) { ml[ng] = sq + (s + dir) * 128; ms[ng] = 0; ng++; }
+                }
+            }
+            for (k = 0; k != 2; k++) {
+                s = sq + dir + k + k - 1;
+                if (!(s & 136)) {
+                    c = b[s];
+                    if (c && (c & 8) != col) {
+                        if (s / 16 == lr) {
+                            add(sq, s, 4); add(sq, s, 3); add(sq, s, 2); add(sq, s, 1);
+                        } else add(sq, s, 0);
+                    } else if (c == 0 && s == ep) add(sq, s, 0);
+                }
+            }
+        } else if (ty == 2 || ty == 6) {
+            i = 0; if (ty == 6) i = 8;
+            ie = i + 8;
+            for (; i != ie; i++) {
+                s = sq + ka[i];
+                if (!(s & 136)) {
+                    c = b[s];
+                    if (c == 0) { if (!caps) { ml[ng] = sq + s * 128; ms[ng] = 0; ng++; } }
+                    else if ((c & 8) != col) add(sq, s, 0);
+                }
+            }
+        } else {
+            i = 0; ie = 8;
+            if (ty == 3) i = 4;
+            if (ty == 4) ie = 4;
+            for (; i != ie; i++) {
+                d = kg[i];
+                s = sq + d;
+                if (caps) {                   /* в тихом поиске интересен только конец луча */
+                    while (!(s & 136) && b[s] == 0) s = s + d;
+                    if (!(s & 136) && (b[s] & 8) != col) add(sq, s, 0);
+                } else {
+                    while (!(s & 136)) {
+                        c = b[s];
+                        if (c == 0) { ml[ng] = sq + s * 128; ms[ng] = 0; ng++; }
+                        else { if ((c & 8) != col) add(sq, s, 0); break; }
+                        s = s + d;
+                    }
+                }
+            }
+        }
+    }
+    /* рокировка: король не ходил, ладья не ходила, между пусто, и не через бой */
+    if (!caps) {
+        if (side == 0 && b[4] == 6) {
+            if ((cas & 1) && b[5] == 0 && b[6] == 0 && !attacked(4, 1) && !attacked(5, 1)) add(4, 6, 0);
+            if ((cas & 2) && b[3] == 0 && b[2] == 0 && b[1] == 0 && !attacked(4, 1) && !attacked(3, 1)) add(4, 2, 0);
+        }
+        if (side == 1 && b[116] == 14) {
+            if ((cas & 4) && b[117] == 0 && b[118] == 0 && !attacked(116, 0) && !attacked(117, 0)) add(116, 118, 0);
+            if ((cas & 8) && b[115] == 0 && b[114] == 0 && b[113] == 0 && !attacked(116, 0) && !attacked(115, 0)) add(116, 114, 0);
+        }
+    }
+}
+
+/* ---- сделать ход. Всё нужное для отката кладём в стопку ---- */
+void make(int m) {
+    int f; int t; int p; int c; int ty; int q; int cp; int rk; int ci; int idx; int ri;
+    ci = 0;
+    f = m & 127;
+    t = (m & 16383) / 128;
+    p = b[f]; c = b[t]; ty = p & 7;
+    h_m[sp] = m; h_pc[sp] = p; h_cas[sp] = cas; h_ep[sp] = ep; h_hm[sp] = hm; h_sc[sp] = sc;
+    hm++;
+    if (c || ty == 1) hm = 0;
+    sc = sc - pv[p * 128 + f];
+    if (c) sc = sc - pv[c * 128 + t];
+    b[f] = 0;
+    idx = pi[f];
+    if (c) { ci = pi[t]; pl[ci] = 128; }
+    q = p;
+    if (ty == 1) {
+        if (t == ep && c == 0 && (f & 7) != (t & 7)) {      /* взятие на проходе: жертва не на той клетке */
+            cp = t - 16 + side * 32;
+            c = b[cp];
+            b[cp] = 0;
+            ci = pi[cp];
+            pl[ci] = 128;
+            sc = sc - pv[c * 128 + cp];
+        }
+        if (t / 16 == 0 || t / 16 == 7) q = side * 8 + 2 + (m & 49152) / 16384;
+    }
+    h_cap[sp] = c;
+    h_ci[sp] = ci;
+    pl[idx] = t; pi[t] = idx;
+    b[t] = q;
+    sc = sc + pv[q * 128 + t];
+    if (ty == 6) {
+        ks[side] = t;
+        rk = 4 + side * 8;
+        if (t - f == 2) {
+            b[f + 1] = rk; b[f + 3] = 0;
+            ri = pi[f + 3]; pl[ri] = f + 1; pi[f + 1] = ri;
+            sc = sc - pv[rk * 128 + f + 3] + pv[rk * 128 + f + 1];
+        } else if (f - t == 2) {
+            b[f - 1] = rk; b[f - 4] = 0;
+            ri = pi[f - 4]; pl[ri] = f - 1; pi[f - 1] = ri;
+            sc = sc - pv[rk * 128 + f - 4] + pv[rk * 128 + f - 1];
+        }
+    }
+    ep = 0 - 1;
+    if (ty == 1 && (t - f == 32 || f - t == 32)) ep = (f + t) / 2;
+    cas = cas & cm[f] & cm[t];
+    side = 1 - side;
+    sp++;
+}
+
+void unmake() {
+    int m; int f; int t; int p; int c; int ty; int ci; int idx; int ri; int cp;
+    sp--;
+    side = 1 - side;
+    m = h_m[sp];
+    f = m & 127;
+    t = (m & 16383) / 128;
+    p = h_pc[sp]; c = h_cap[sp]; ty = p & 7;
+    sc = h_sc[sp]; cas = h_cas[sp]; ep = h_ep[sp]; hm = h_hm[sp];
+    ci = h_ci[sp];
+    idx = pi[t];
+    pl[idx] = f; pi[f] = idx;
+    b[f] = p;
+    if (ty == 1 && t == ep && (f & 7) != (t & 7)) {
+        b[t] = 0;
+        cp = t - 16 + side * 32;
+        b[cp] = c;
+        pl[ci] = cp; pi[cp] = ci;
+    } else {
+        b[t] = c;
+        if (c) { pl[ci] = t; pi[t] = ci; }
+    }
+    if (ty == 6) {
+        ks[side] = f;
+        if (t - f == 2) { b[f + 3] = b[f + 1]; b[f + 1] = 0; ri = pi[f + 1]; pl[ri] = f + 3; pi[f + 3] = ri; }
+        else if (f - t == 2) { b[f - 4] = b[f - 1]; b[f - 1] = 0; ri = pi[f - 1]; pl[ri] = f - 4; pi[f - 4] = ri; }
+    }
+}
+
+/* ход только что сделан: не оставил ли ходивший своего короля под боем? */
+int left_in_check() { return attacked(ks[1 - side], side); }
+
+int in_check() { return attacked(ks[side], 1 - side); }
+
+/* надо ли вообще проверять короля после этого хода? Если шаха не было, ходит не король,
+   фигура не стояла на одной линии с королём и это не взятие на проходе -- король точно цел. */
+int risky(int m, int chk) {
+    int f; int ty;
+    if (chk) return 1;
+    f = m & 127;
+    ty = b[f] & 7;
+    if (ty == 6) return 1;
+    if (al[f - ks[side] + 128]) return 1;
+    if (ty == 1 && (m & 16383) / 128 == ep) return 1;
+    return 0;
+}
+
+/* ---- perft: считаем листья. Если число не как в википедии -- где-то баг ---- */
+void perft(int d) {
+    int start; int i; int n; int chk; int need;
+    chk = in_check();
+    start = ng;
+    gen(0);
+    n = ng;
+    for (i = start; i < n; i++) {
+        need = risky(ml[i], chk);
+        make(ml[i]);
+        if (!need || !left_in_check()) {
+            if (d == 1) {
+                pc_lo++;
+                if (pc_lo == 10000) { pc_lo = 0; pc_hi++; }
+            } else perft(d - 1);
+        }
+        unmake();
+    }
+    ng = start;
+}
+
+void print_perft() {
+    if (pc_hi > 0) {
+        print_num(pc_hi);
+        if (pc_lo < 1000) putchar(48);
+        if (pc_lo < 100) putchar(48);
+        if (pc_lo < 10) putchar(48);
+    }
+    print_num(pc_lo);
+}
+
+/* ---- легальные ходы текущей позиции -> lg[] ---- */
+void legal_moves() {
+    int start; int i; int n; int m;
+    start = ng;
+    gen(0);
+    n = ng;
+    lgn = 0;
+    for (i = start; i < n; i++) {
+        m = ml[i];
+        make(m);
+        if (!left_in_check()) { lg[lgn] = m; lgn++; }
+        unmake();
+    }
+    ng = start;
+}
+
+/* ---- хватит ли фигур, чтобы вообще поставить мат ---- */
+int insufficient() {
+    int sq; int p; int ty; int n; int bb; int c0; int c1;
+    n = 0; bb = 0; c0 = 0; c1 = 0;
+    for (sq = 0; sq < 120; sq++) {
+        if (sq & 136) continue;
+        p = b[sq];
+        if (p == 0) continue;
+        ty = p & 7;
+        if (ty == 1 || ty == 4 || ty == 5) return 0;
+        if (ty == 2) n++;
+        if (ty == 3) { bb++; if ((sq + sq / 16) & 1) c1 = 1; else c0 = 1; }
+    }
+    if (n + bb <= 1) return 1;
+    if (n == 0 && (c0 == 0 || c1 == 0)) return 1;     /* одни слоны одного цвета полей */
+    return 0;
+}
+
+/* ---- отпечаток позиции ---- */
+void hash_pos() {
+    int sq; int h1; int h2; int p;
+    h1 = side + cas * 2; h2 = 7 + cas;
+    for (sq = 0; sq < 120; sq++) {
+        if (sq & 136) continue;
+        p = b[sq];
+        h1 = h1 * 31 + p + 1;
+        h2 = h2 * 17 + p * 3 + sq;
+    }
+    hh1[sp] = h1; hh2[sp] = h2;
+}
+
+int repeats() {
+    int j; int n;
+    n = 0;
+    j = sp - 2;
+    while (j >= 0 && j >= sp - hm) {
+        if (hh1[j] == hh1[sp] && hh2[j] == hh2[sp]) n++;
+        j = j - 2;
+    }
+    return n;
+}
+
+/* ---- разбираемся, что творится в позиции: мат, пат, ничья ---- */
+void analyze() {
+    legal_moves();
+    incheck = in_check();
+    hash_pos();
+    over = 0;
+    if (lgn == 0) { if (incheck) over = 1; else over = 2; }
+    else if (hm >= 100) over = 3;
+    else if (insufficient()) over = 4;
+    else if (repeats() >= 2) over = 5;
+    else if (sp >= 320) over = 7;
+    if (resigned) over = 6;
+}
+
+/* ---- разбор FEN. 1 -- получилось, 0 -- строка кривая ---- */
+int load_fen(char *s) {
+    int i; int r; int f; int c; int p; int k; int n; int ok; int sq; int j;
+    for (i = 0; i < 128; i++) b[i] = 0;
+    i = 0; r = 7; f = 0;
+    while (s[i] && s[i] != 32) {
+        c = s[i];
+        if (c == 47) { r--; f = 0; }
+        else if (c >= 49 && c <= 56) f = f + c - 48;
+        else {
+            p = 0;
+            if (c == 'P') p = 1; if (c == 'N') p = 2; if (c == 'B') p = 3;
+            if (c == 'R') p = 4; if (c == 'Q') p = 5; if (c == 'K') p = 6;
+            if (c == 'p') p = 9; if (c == 'n') p = 10; if (c == 'b') p = 11;
+            if (c == 'r') p = 12; if (c == 'q') p = 13; if (c == 'k') p = 14;
+            if (p == 0 || f > 7 || r < 0) return 0;
+            b[r * 16 + f] = p;
+            f++;
+        }
+        i++;
+    }
+    if (r != 0) return 0;
+    while (s[i] == 32) i++;
+    side = 0;
+    if (s[i] == 'b') side = 1; else if (s[i] != 'w') return 0;
+    i++;
+    while (s[i] == 32) i++;
+    cas = 0;
+    while (s[i] && s[i] != 32) {
+        if (s[i] == 'K') cas = cas | 1;
+        if (s[i] == 'Q') cas = cas | 2;
+        if (s[i] == 'k') cas = cas | 4;
+        if (s[i] == 'q') cas = cas | 8;
+        i++;
+    }
+    while (s[i] == 32) i++;
+    ep = 0 - 1;
+    if (file_of(s[i]) >= 0 && rank_of(s[i + 1]) >= 0) {
+        ep = file_of(s[i]) + rank_of(s[i + 1]) * 16;
+        i = i + 2;
+    } else if (s[i] == 45) i++;
+    while (s[i] == 32) i++;
+    hm = 0;
+    while (s[i] >= 48 && s[i] <= 57) { hm = hm * 10 + s[i] - 48; i++; }
+    while (s[i] == 32) i++;
+    n = 0;
+    while (s[i] >= 48 && s[i] <= 57) { n = n * 10 + s[i] - 48; i++; }
+    if (n < 1) n = 1;
+    st_full = n; st_side = side;
+    /* короли, права, очки */
+    ks[0] = 0 - 1; ks[1] = 0 - 1; sc = 0;
+    ok = 1;
+    for (sq = 0; sq < 120; sq++) {
+        if (sq & 136) continue;
+        p = b[sq];
+        if (p == 6) { if (ks[0] >= 0) ok = 0; ks[0] = sq; }
+        if (p == 14) { if (ks[1] >= 0) ok = 0; ks[1] = sq; }
+        if (p) sc = sc + pv[p * 128 + sq];
+        if (p == 1 && (sq / 16 == 0 || sq / 16 == 7)) ok = 0;
+        if (p == 9 && (sq / 16 == 0 || sq / 16 == 7)) ok = 0;
+    }
+    if (ks[0] < 0 || ks[1] < 0 || ok == 0) return 0;
+    for (i = 0; i < 32; i++) pl[i] = 128;
+    n = 0; k = 16;
+    for (sq = 0; sq < 120; sq++) {
+        if (sq & 136) continue;
+        p = b[sq];
+        if (p == 0) continue;
+        if (p & 8) { if (k >= 32) return 0; pl[k] = sq; pi[sq] = k; k++; }
+        else { if (n >= 16) return 0; pl[n] = sq; pi[sq] = n; n++; }
+    }
+    if (b[4] != 6 || b[7] != 4) cas = cas & 14;
+    if (b[4] != 6 || b[0] != 4) cas = cas & 13;
+    if (b[116] != 14 || b[119] != 12) cas = cas & 11;
+    if (b[116] != 14 || b[112] != 12) cas = cas & 7;
+    if (ep >= 0) {                                   /* проходную пешку надо бы реально иметь */
+        j = 16; if (side == 1) j = 0 - 16;
+        if (b[ep] != 0 || b[ep - j] != 1 + (1 - side) * 8) ep = 0 - 1;
+    }
+    sp = 0; ng = 0;
+    if (attacked(ks[1 - side], side)) return 0;      /* противнику шах при нашем ходе -- так не бывает */
+    return 1;
+}
+
+/* ================= вывод ================= */
+void print_side(int s) { if (s == 0) print("Белые"); else print("Чёрные"); }
+
+void print_piece(int p) {
+    if (p == 0) print("· ");
+    else if (p == 1) print("♙ ");
+    else if (p == 2) print("♘ ");
+    else if (p == 3) print("♗ ");
+    else if (p == 4) print("♖ ");
+    else if (p == 5) print("♕ ");
+    else if (p == 6) print("♔ ");
+    else if (p == 9) print("♟ ");
+    else if (p == 10) print("♞ ");
+    else if (p == 11) print("♝ ");
+    else if (p == 12) print("♜ ");
+    else if (p == 13) print("♛ ");
+    else if (p == 14) print("♚ ");
+    else print("? ");
+}
+
+/* запись хода за полуход i */
+void print_san_at(int i) {
+    int k;
+    k = 0;
+    while (sh[i * 8 + k]) { putchar(sh[i * 8 + k]); k++; }
+}
+
+void print_last() {
+    int i; int blk;
+    if (sp == 0) return;
+    i = sp - 1;
+    blk = (st_side + i) & 1;
+    print("Последний ход: ");
+    print_num(st_full + (st_side + i) / 2);
+    if (blk) print("... "); else print(". ");
+    print_san_at(i);
+    putnl();
+}
+
+void show(int flip) {
+    int x; int y; int rr; int ff;
+    putnl();
+    if (flip) print("  h g f e d c b a"); else print("  a b c d e f g h");
+    putnl();
+    for (y = 0; y < 8; y++) {
+        rr = 7 - y; if (flip) rr = y;
+        putchar(49 + rr); putchar(32);
+        for (x = 0; x < 8; x++) {
+            ff = x; if (flip) ff = 7 - x;
+            print_piece(b[rr * 16 + ff]);
+        }
+        putchar(49 + rr);
         putnl();
     }
-    print("  a b c d e f g h");
+    if (flip) print("  h g f e d c b a"); else print("  a b c d e f g h");
     putnl();
+    print_last();
 }
 
-/* ---- можно ли пройти от (x1,y1) до (x2,y2), не перепрыгивая через других ---- */
-int path_clear(int x1, int y1, int x2, int y2) {
-    int dx; int dy; int x; int y;
-    dx = sgn(x2 - x1);
-    dy = sgn(y2 - y1);
-    x = x1 + dx;
-    y = y1 + dy;
-    while (x != x2 || y != y2) {
-        if (get(x, y) != 46) return 0;
-        x = x + dx;
-        y = y + dy;
+void print_status() {
+    if (over == 1) {
+        print("Мат. ");
+        if (side == 1) print("Белые"); else print("Чёрные");
+        print(" победили.");
+    } else if (over == 2) print("Пат. Ничья.");
+    else if (over == 3) print("Ничья по правилу 50 ходов.");
+    else if (over == 4) print("Ничья: фигур не хватит ни на какой мат.");
+    else if (over == 5) print("Ничья: позиция повторилась трижды.");
+    else if (over == 6) {
+        print_side(side);
+        print(" сдались. ");
+        if (side == 1) print("Белые"); else print("Чёрные");
+        print(" победили.");
+    } else if (over == 7) print("Ничья: партия затянулась на 160 ходов, все устали.");
+    else if (incheck) print("Шах!");
+    if (over || incheck) putnl();
+}
+
+/* ---- запись хода в SAN (позиция ДО хода, lg -- её легальные ходы) ---- */
+void sadd(int c) { sb[sbn] = c; sbn++; sb[sbn] = 0; }
+
+void san(int m) {
+    int f; int t; int p; int ty; int i; int o; int of; int ot; int amb; int sf; int sr; int cap;
+    sbn = 0; sb[0] = 0;
+    f = m & 127; t = (m & 16383) / 128; p = b[f]; ty = p & 7;
+    if (ty == 6 && t - f == 2) { sadd('O'); sadd(45); sadd('O'); return; }
+    if (ty == 6 && f - t == 2) { sadd('O'); sadd(45); sadd('O'); sadd(45); sadd('O'); return; }
+    cap = 0;
+    if (b[t]) cap = 1;
+    if (ty == 1 && (f & 7) != (t & 7)) cap = 1;
+    if (ty != 1) {
+        sadd(letter(ty));
+        amb = 0; sf = 0; sr = 0;
+        for (i = 0; i < lgn; i++) {
+            o = lg[i];
+            if (o == m) continue;
+            of = o & 127; ot = (o & 16383) / 128;
+            if (ot == t && (b[of] & 7) == ty) {
+                amb = 1;
+                if ((of & 7) == (f & 7)) sf = 1;
+                if (of / 16 == f / 16) sr = 1;
+            }
+        }
+        if (amb) {
+            if (!sf) sadd(97 + (f & 7));
+            else if (!sr) sadd(49 + f / 16);
+            else { sadd(97 + (f & 7)); sadd(49 + f / 16); }
+        }
+    } else if (cap) sadd(97 + (f & 7));
+    if (cap) sadd('x');
+    sadd(97 + (t & 7)); sadd(49 + t / 16);
+    if (ty == 1 && (t / 16 == 0 || t / 16 == 7)) { sadd('='); sadd(letter(2 + (m & 49152) / 16384)); }
+}
+
+/* ---- разбор того, что набрал человек ----
+   Возвращает: 0 -- не понял, 1 -- ход найден (pm), 2 -- так ходить нельзя, 3 -- неоднозначно */
+int pick(int f, int t, int ty, int df, int dr, int pr, int strict) {
+    int i; int m; int mf; int mt; int cnt; int p; int want; int lastr;
+    cnt = 0;
+    for (i = 0; i < lgn; i++) {
+        m = lg[i];
+        mf = m & 127; mt = (m & 16383) / 128; p = b[mf] & 7;
+        if (mt != t) continue;
+        if (f >= 0 && mf != f) continue;
+        if (ty && p != ty) continue;
+        if (df >= 0 && (mf & 7) != df) continue;
+        if (dr >= 0 && mf / 16 != dr) continue;
+        if (strict && df < 0 && (mf & 7) != (mt & 7)) continue;   /* пешка без "x": только прямо */
+        lastr = 0;
+        if (p == 1 && (mt / 16 == 0 || mt / 16 == 7)) lastr = 1;
+        if (lastr) {
+            want = pr; if (want == 0) want = 5;                   /* не сказали -- ферзь */
+            if (2 + (m & 49152) / 16384 != want) continue;
+        } else if (pr) continue;
+        cnt++;
+        pm = m;
     }
+    if (cnt == 0) return 2;
+    if (cnt > 1) return 3;
     return 1;
 }
 
-/* ---- ходы фигур. Каждая функция своя. Да, похожи. Нет, объединять не буду ---- */
-int pawn_ok(int white) {
-    int dir; int start; char t;
-    t = get(tx, ty);
-    if (white) { dir = 1; start = 1; } else { dir = 0 - 1; start = 6; }
-    if (fx == tx && t == 46) {
-        if (ty == fy + dir) return 1;
-        if (fy == start && ty == fy + dir + dir && get(fx, fy + dir) == 46) return 1;
-        return 0;
+int parse_move() {
+    int n; int i; int c; int ty; int df; int dr; int tf; int tr; int pr; int f; int k;
+    n = ln;
+    /* снисходительность: E2E4 -> e2e4, nf3 -> Nf3 */
+    if (n >= 2 && line[0] >= 'A' && line[0] <= 'H' && rank_of(line[1]) >= 0) line[0] = line[0] + 32;
+    if (n >= 4 && line[2] >= 'A' && line[2] <= 'H' && rank_of(line[3]) >= 0) line[2] = line[2] + 32;
+    if (n >= 3 && (line[0] == 'n' || line[0] == 'r' || line[0] == 'q' || line[0] == 'k')) line[0] = line[0] - 32;
+    /* рокировка */
+    if (eq(line, "O-O") || eq(line, "0-0") || eq(line, "o-o")) {
+        if (side == 0) return pick(4, 6, 6, 0 - 1, 0 - 1, 0, 0);
+        return pick(116, 118, 6, 0 - 1, 0 - 1, 0, 0);
     }
-    if (abs_(tx - fx) == 1 && ty == fy + dir && t != 46) return 1;
-    return 0;
+    if (eq(line, "O-O-O") || eq(line, "0-0-0") || eq(line, "o-o-o")) {
+        if (side == 0) return pick(4, 2, 6, 0 - 1, 0 - 1, 0, 0);
+        return pick(116, 114, 6, 0 - 1, 0 - 1, 0, 0);
+    }
+    /* координатная запись: e2e4, e2-e4, e7e8q */
+    if (n >= 4 && file_of(line[0]) >= 0 && rank_of(line[1]) >= 0) {
+        i = 2;
+        if (line[2] == 45 || line[2] == 'x') i = 3;
+        if (n >= i + 2 && file_of(line[i]) >= 0 && rank_of(line[i + 1]) >= 0) {
+            pr = 0;
+            if (n == i + 3) { pr = promo_type(line[i + 2]); if (pr == 0) return 0; }
+            else if (n != i + 2) return 0;
+            f = file_of(line[0]) + rank_of(line[1]) * 16;
+            return pick(f, file_of(line[i]) + rank_of(line[i + 1]) * 16, 0, 0 - 1, 0 - 1, pr, 0);
+        }
+    }
+    /* алгебраическая запись */
+    c = line[0];
+    ty = 0;
+    if (file_of(c) >= 0) ty = 1;
+    if (c == 'N') ty = 2;
+    if (c == 'B') ty = 3;
+    if (c == 'R') ty = 4;
+    if (c == 'Q') ty = 5;
+    if (c == 'K') ty = 6;
+    if (ty == 0) return 0;
+    pr = 0;
+    if (rank_of(line[n - 1]) < 0) {                  /* на конце буква: превращение */
+        pr = promo_type(line[n - 1]);
+        if (pr == 0 || ty != 1) return 0;
+        n--;
+        if (n > 0 && line[n - 1] == '=') n--;
+    }
+    if (n < 2) return 0;
+    tf = file_of(line[n - 2]); tr = rank_of(line[n - 1]);
+    if (tf < 0 || tr < 0) return 0;
+    df = 0 - 1; dr = 0 - 1;
+    k = 1; if (ty == 1) k = 0;
+    for (i = k; i < n - 2; i++) {
+        c = line[i];
+        if (c == 'x' || c == 45 || c == 58) continue;
+        if (file_of(c) >= 0) { if (df >= 0) return 0; df = file_of(c); }
+        else if (rank_of(c) >= 0) { if (dr >= 0) return 0; dr = rank_of(c); }
+        else return 0;
+    }
+    return pick(0 - 1, tf + tr * 16, ty, df, dr, pr, ty == 1);
 }
 
-int knight_ok() {
-    int dx; int dy;
-    dx = abs_(tx - fx);
-    dy = abs_(ty - fy);
-    if (dx == 1 && dy == 2) return 1;
-    if (dx == 2 && dy == 1) return 1;
-    return 0;
+/* ================= компьютер ================= */
+int quiesce(int alpha, int beta, int ply) {
+    int stand; int start; int n; int i; int j; int bi; int bv; int m; int score; int t;
+    nodes++;
+    if (nodes > budget && allow) stopf = 1;
+    if (stopf) return 0;
+    stand = sc; if (side) stand = 0 - sc;
+    if (stand >= beta) return stand;
+    if (ply >= 8) return stand;
+    if (stand > alpha) alpha = stand;
+    start = ng;
+    gen(1);
+    n = ng;
+    for (i = start; i < n; i++) {
+        bi = i; bv = ms[i];
+        for (j = i + 1; j < n; j++) if (ms[j] > bv) { bv = ms[j]; bi = j; }
+        m = ml[bi]; ml[bi] = ml[i]; ml[i] = m; ms[bi] = ms[i]; ms[i] = bv;
+        if (bv >= 1000 && bv < 1100 && stand + qv[(bv - 985) / 16] + 200 < alpha) continue;   /* даже с этим взятием до альфы не дотянем */
+        make(m);
+        if (left_in_check()) { unmake(); continue; }
+        score = 0 - quiesce(0 - beta, 0 - alpha, ply + 1);
+        unmake();
+        if (stopf) { ng = start; return 0; }
+        if (score >= beta) { ng = start; return score; }
+        if (score > alpha) alpha = score;
+    }
+    ng = start;
+    return alpha;
 }
 
-int rook_ok() {
-    if (fx == tx || fy == ty) {
-        if (path_clear(fx, fy, tx, ty)) return 1;
+int k1[20]; int k2[20];         /* "убийцы": тихие ходы, которые недавно отсекали перебор на этой глубине */
+int nn;                         /* 1 -- мы только что "пропустили ход", два пропуска подряд не делаем */
+int maxd;
+
+/* есть ли у ходящей стороны что-то кроме короля и пешек (иначе пропуск хода опасен: цугцванг) */
+int has_pieces() {
+    int u; int sq; int ty;
+    for (u = side * 16; u < side * 16 + 16; u++) {
+        sq = pl[u];
+        if (!(sq & 128)) { ty = b[sq] & 7; if (ty > 1 && ty < 6) return 1; }
     }
     return 0;
 }
 
-int bishop_ok() {
-    if (abs_(tx - fx) == abs_(ty - fy)) {
-        if (path_clear(fx, fy, tx, ty)) return 1;
+int search(int depth, int alpha, int beta, int ply) {
+    int start; int n; int i; int j; int bi; int bv; int m; int score; int best; int legal; int chk; int need;
+    int nul; int ose; int t; int stand;
+    nodes++;
+    if (nodes > budget && allow) stopf = 1;
+    if (stopf) return 0;
+    if (depth <= 0) return quiesce(alpha, beta, 0);
+    nul = nn; nn = 0;
+    if (hm >= 100) return 0;
+    chk = in_check();
+    if (chk && ply < 6) depth++;                     /* под шахом думаем глубже */
+    if (chk == 0 && depth <= 2 && beta < 29000 && alpha > 0 - 29000) {
+        stand = sc; if (side) stand = 0 - sc;
+        if (stand - depth * 250 >= beta) return stand;                 /* и так всё слишком хорошо */
+        if (depth == 1 && stand + 300 <= alpha) return quiesce(alpha, beta, 0);   /* всё слишком плохо, тихие ходы не спасут */
     }
-    return 0;
-}
-
-int queen_ok() {
-    /* тут могла быть красивая реализация через ладью и слона, но мы пойдём другим путём */
-    if (fx == tx || fy == ty) {
-        if (path_clear(fx, fy, tx, ty)) return 1;
+    /* "а что, если я пропущу ход?" -- если и так всё хорошо, то и думать дальше незачем */
+    if (nul == 0 && chk == 0 && depth >= 3 && beta < 29000 && has_pieces()) {
+        ose = ep; ep = 0 - 1; side = 1 - side; nn = 1;
+        score = 0 - search(depth - 3, 0 - beta, 1 - beta, ply + 1);
+        nn = 0; side = 1 - side; ep = ose;
+        if (stopf) return 0;
+        if (score >= beta) return beta;
     }
-    if (abs_(tx - fx) == abs_(ty - fy)) {
-        if (path_clear(fx, fy, tx, ty)) return 1;
+    start = ng;
+    gen(0);
+    n = ng;
+    if (ply < 16) {
+        for (i = start; i < n; i++) {
+            if (ml[i] == k1[ply]) ms[i] = ms[i] + 600;
+            else if (ml[i] == k2[ply]) ms[i] = ms[i] + 500;
+        }
     }
-    return 0;
+    best = 0 - 31000; legal = 0;
+    for (i = start; i < n; i++) {
+        bi = i; bv = ms[i];
+        for (j = i + 1; j < n; j++) if (ms[j] > bv) { bv = ms[j]; bi = j; }
+        m = ml[bi]; ml[bi] = ml[i]; ml[i] = m; ms[bi] = ms[i]; ms[i] = bv;
+        need = risky(m, chk);
+        make(m);
+        if (need && left_in_check()) { unmake(); continue; }
+        legal++;
+        if (legal == 1) score = 0 - search(depth - 1, 0 - beta, 0 - alpha, ply + 1);
+        else {
+            score = 0 - search(depth - 1, 0 - alpha - 1, 0 - alpha, ply + 1);
+            if (score > alpha && score < beta && stopf == 0) score = 0 - search(depth - 1, 0 - beta, 0 - alpha, ply + 1);
+        }
+        unmake();
+        if (stopf) { ng = start; return 0; }
+        if (score > best) {
+            best = score;
+            if (score > alpha) {
+                alpha = score;
+                if (alpha >= beta) {
+                    t = (m & 16383) / 128;
+                    if (ply < 16 && b[t] == 0 && m != k1[ply]) { k2[ply] = k1[ply]; k1[ply] = m; }
+                    break;
+                }
+            }
+        }
+    }
+    ng = start;
+    if (legal == 0) { if (chk) return 0 - (30000 - ply); return 0; }
+    return best;
 }
 
-int king_ok() {
-    if (abs_(tx - fx) <= 1 && abs_(ty - fy) <= 1) return 1;
-    return 0;
+int last_depth;
+
+/* выбрать ход: итеративное углубление, пока не кончится запас "узлов" */
+int think() {
+    int start; int i; int j; int n; int m; int d; int score; int bs; int bm; int alpha; int best; int bi; int bv;
+    start = ng;
+    gen(0);
+    n = ng;
+    rn = 0;
+    for (i = start; i < n; i++) {
+        bi = i; bv = ms[i];
+        for (j = i + 1; j < n; j++) if (ms[j] > bv) { bv = ms[j]; bi = j; }
+        m = ml[bi]; ml[bi] = ml[i]; ml[i] = m; ms[bi] = ms[i]; ms[i] = bv;
+        make(m);
+        if (!left_in_check()) { rl[rn] = m; rn++; }
+        unmake();
+    }
+    ng = start;
+    best = rl[0];
+    nodes = 0; stopf = 0; allow = 0; last_depth = 0; nn = 0;
+    for (i = 0; i < 20; i++) { k1[i] = 0; k2[i] = 0; }
+    if (rn == 1) return best;
+    for (d = 1; d <= maxd; d++) {
+        allow = 0;
+        if (d >= 3) allow = 1;
+        alpha = 0 - 31000; bs = 0 - 31000; bm = rl[0];
+        for (i = 0; i < rn; i++) {
+            make(rl[i]);
+            if (i == 0) score = 0 - search(d - 1, 0 - 31000, 0 - alpha, 1);
+            else {
+                score = 0 - search(d - 1, 0 - alpha - 1, 0 - alpha, 1);
+                if (score > alpha && stopf == 0) score = 0 - search(d - 1, 0 - 31000, 0 - alpha, 1);
+            }
+            unmake();
+            if (stopf) break;
+            if (score > bs) { bs = score; bm = rl[i]; if (score > alpha) alpha = score; }
+        }
+        if (stopf) {
+            if (i > 0) best = bm;               /* первый ход (лучший с прошлого круга) мы дочитали -- значит, что нашли лучше, то и берём */
+            break;
+        }
+        best = bm;
+        last_depth = d;
+        if (bs > 29000) break;                       /* мат найден, дальше можно не мучиться */
+        for (i = 0; i < rn; i++) if (rl[i] == best) { rl[i] = rl[0]; rl[0] = best; }
+    }
+    return best;
 }
 
-/* ---- главная проверка. Если вернула 1 -- ходим ---- */
-int move_ok() {
-    char p; char t;
-    p = get(fx, fy);
-    t = get(tx, ty);
-    if (p == 46) return 0;
-    if (turn == 0 && is_black(p)) return 0;
-    if (turn == 1 && is_white(p)) return 0;
-    if (fx == tx && fy == ty) return 0;
-    if (turn == 0 && is_white(t)) return 0;
-    if (turn == 1 && is_black(t)) return 0;
-    if (p == 'P') return pawn_ok(1);
-    if (p == 'p') return pawn_ok(0);
-    if (p == 'N' || p == 'n') return knight_ok();
-    if (p == 'R' || p == 'r') return rook_ok();
-    if (p == 'B' || p == 'b') return bishop_ok();
-    if (p == 'Q' || p == 'q') return queen_ok();
-    if (p == 'K' || p == 'k') return king_ok();
-    return 0;
+/* ================= игра ================= */
+/* сделать ход m: записать SAN, сделать, пересчитать положение, дописать + или # */
+void do_move(int m) {
+    int k;
+    san(m);
+    make(m);
+    analyze();
+    if (over == 1) sadd('#'); else if (incheck) sadd('+');
+    for (k = 0; k < 8; k++) sh[(sp - 1) * 8 + k] = 0;
+    for (k = 0; k < 7 && sb[k]; k++) sh[(sp - 1) * 8 + k] = sb[k];
 }
 
-/* ---- читаем строку с клавиатуры. 2 - ввод кончился, 0 - непонятно, 1 - ход ---- */
-int read_move() {
-    int c; int n;
-    n = 0;
+void new_game() {
+    load_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    resigned = 0;
+    analyze();
+}
+
+/* прочитать строку; 0 -- ввод кончился совсем, 1 -- строка прочитана (может быть пустой) */
+int read_line() {
+    int c;
+    ln = 0;
     c = getchar();
+    if (c == 0) return 0;
     while (c != 10 && c != 0) {
-        if (n < 15) { line[n] = c; n++; }
+        if (c != 13 && ln < 98) { line[ln] = c; ln++; }
         c = getchar();
     }
-    line[n] = 0;
-    if (n == 0) return 2;
-    if (n != 4) return 0;
-    fx = line[0] - 97;
-    fy = line[1] - 49;
-    tx = line[2] - 97;
-    ty = line[3] - 49;
-    if (fx < 0 || fx > 7 || fy < 0 || fy > 7) return 0;
-    if (tx < 0 || tx > 7 || ty < 0 || ty > 7) return 0;
+    line[ln] = 0;
     return 1;
+}
+
+void help() {
+    print("Как ходить (на выбор):"); putnl();
+    print("  e2e4  e7e8q     - откуда и куда (q r b n - во что превратить пешку)"); putnl();
+    print("  e4  Nf3  exd5  Nbd7  R1e2  Qxf7  e8=Q  - обычная шахматная запись"); putnl();
+    print("  O-O  O-O-O      - короткая и длинная рокировка (можно 0-0, 0-0-0)"); putnl();
+    print("Команды:"); putnl();
+    print("  moves - все ходы   undo - откат   new - заново   resign - сдаться"); putnl();
+    print("  mode - сменить режим   fen <строка> - позиция   perft N - проверка генератора"); putnl();
+    print("  help - это   quit или пустая строка - выход"); putnl();
+    print("  hint - совет от компьютера   level 1..5 - сила компьютера (по умолчанию 3)"); putnl();
+    print("  demo N - компьютер сам играет N полуходов за обе стороны"); putnl();
+}
+
+void list_moves() {
+    int i; int cnt;
+    cnt = 0;
+    for (i = 0; i < lgn; i++) {
+        san(lg[i]);
+        print(sb);
+        putchar(32);
+        cnt++;
+        if (cnt == 10) { putnl(); cnt = 0; }
+    }
+    if (cnt) putnl();
+    print("Всего ходов: "); print_num(lgn); putnl();
+}
+
+int ask_mode() {
+    int c;
+    while (1) {
+        print("Играть с кем? 1 - с человеком, 2 - с компьютером (за чёрных), 3 - с компьютером (за белых)"); putnl();
+        print("> ");
+        if (!read_line()) return 0;
+        if (ln == 1 && line[0] >= 49 && line[0] <= 51) {
+            c = line[0] - 49;
+            cpu = 0 - 1;
+            if (c == 1) cpu = 1;
+            if (c == 2) cpu = 0;
+            return 1;
+        }
+        print("Нужна цифра 1, 2 или 3."); putnl();
+    }
+    return 0;
+}
+
+void set_level(int d) {
+    if (d == 1) budget = 600;
+    if (d == 2) budget = 1800;
+    if (d == 3) budget = 4500;
+    if (d == 4) budget = 9000;
+    if (d == 5) budget = 20000;
 }
 
 int main() {
-    int r; char p; char t;
-    setup();
-    turn = 0;
-    game_over = 0;
-    moves_done = 0;
-    print("ШАХМАТЫ. Ход вводится так: e2e4. Пустая строка - выход.");
-    putnl();
-    while (game_over == 0) {
-        show();
-        if (turn == 0) print("Ход белых > "); else print("Ход чёрных > ");
-        r = read_move();
-        if (r == 2) {
-            print("Ввода больше нет. Расходимся.");
+    int redraw; int k; int j; int r; int m; int n; int d;
+    init_tables();
+    budget = 4500; maxd = 6;
+    print("ШАХМАТЫ v1.0. Теперь с шахами, матами и рокировкой. help - подсказка."); putnl();
+    if (!ask_mode()) { print("Ввода больше нет. Расходимся."); putnl(); return 0; }
+    new_game();
+    redraw = 1;
+    while (1) {
+        if (redraw) {
+            show(cpu == 0);
+            print_status();
+            redraw = 0;
+        }
+        if (over == 0 && side == cpu) {
+            print("Компьютер думает... ");
+            m = think();
+            san(m);
+            print("ходит "); print(sb);
+            print(" (глубина "); print_num(last_depth); print(", узлов "); print_num(nodes); print(")");
             putnl();
+            do_move(m);
+            redraw = 1;
+            continue;
+        }
+        if (over == 0) {
+            if (side == 0) print("Ход белых > "); else print("Ход чёрных > ");
+        } else print("Партия окончена (new, undo, quit) > ");
+        if (!read_line()) { putnl(); print("Ввода больше нет. Расходимся."); putnl(); return 0; }
+        if (ln == 0 || eq(line, "quit") || eq(line, "exit") || eq(line, "q")) {
+            print("Пока!"); putnl();
             return 0;
         }
-        if (r == 0) {
-            print("Не понял ход.");
+        if (eq(line, "help") || eq(line, "?") || eq(line, "h")) { help(); continue; }
+        if (eq(line, "moves") || eq(line, "m")) { list_moves(); continue; }
+        if (eq(line, "new")) { new_game(); redraw = 1; continue; }
+        if (eq(line, "mode")) {
+            if (!ask_mode()) { print("Ввода больше нет. Расходимся."); putnl(); return 0; }
+            new_game(); redraw = 1; continue;
+        }
+        if (eq(line, "undo") || eq(line, "u")) {
+            if (sp == 0) { print("Откатывать нечего, ходов ещё не было."); putnl(); continue; }
+            unmake();
+            if (side == cpu && sp > 0) unmake();
+            resigned = 0;
+            analyze();
+            redraw = 1;
+            continue;
+        }
+        if (eq(line, "resign")) {
+            if (over) { print("Партия и так окончена."); putnl(); continue; }
+            resigned = 1;
+            analyze();
+            redraw = 1;
+            continue;
+        }
+        if (starts(line, "perft ")) {
+            d = 0; k = 6;
+            while (line[k] >= 48 && line[k] <= 57) { d = d * 10 + line[k] - 48; k++; }
+            if (d < 1 || d > 4) { print("perft: глубина от 1 до 4 (пятая считалась бы минут двадцать)."); putnl(); continue; }
+            pc_lo = 0; pc_hi = 0;
+            perft(d);
+            print("perft "); print_num(d); print(" = "); print_perft(); putnl();
+            continue;
+        }
+        if (starts(line, "level ")) {
+            d = line[6] - 48;
+            if (ln != 7 || d < 1 || d > 5) { print("level: число от 1 (глупенький) до 5 (задумчивый)."); putnl(); continue; }
+            set_level(d);
+            print("Уровень компьютера: "); print_num(d); putnl();
+            continue;
+        }
+        if (starts(line, "depth ")) {      /* тайная кнопка: предел глубины */
+            maxd = line[6] - 48;
+            continue;
+        }
+        if (eq(line, "hint")) {
+            if (over) { print("Партия окончена, подсказывать нечего."); putnl(); continue; }
+            print("Думаю... ");
+            m = think();
+            san(m);
+            print("Совет: "); print(sb);
+            print(" (глубина "); print_num(last_depth); print(", узлов "); print_num(nodes); print(")");
             putnl();
-        } else if (move_ok() == 0) {
-            print("Так ходить нельзя.");
+            continue;
+        }
+        if (starts(line, "demo ")) {        /* компьютер играет сам с собой N полуходов */
+            d = 0;
+            for (k = 5; k < ln; k++) d = d * 10 + line[k] - 48;
+            j = 0;
+            while (d > 0 && over == 0) {
+                m = think();
+                san(m);
+                print(sb);
+                putchar(32);
+                do_move(m);
+                d--; j++;
+                if (j == 12) { putnl(); j = 0; }
+            }
             putnl();
+            redraw = 1;
+            continue;
+        }
+        if (starts(line, "budget ")) {      /* тайная кнопка для настройки: сколько узлов думать */
+            budget = 0;
+            for (k = 7; k < ln; k++) budget = budget * 10 + line[k] - 48;
+            continue;
+        }
+        if (starts(line, "fen ")) {
+            if (load_fen(line + 4)) {
+                resigned = 0;
+                analyze();
+                redraw = 1;
+            } else { print("С этим FEN что-то не так. Начинаем партию заново."); putnl(); load_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); analyze(); }
+            continue;
+        }
+        if (over) { print("Партия окончена. Скажи new, undo или quit."); putnl(); continue; }
+        /* выкидываем пробелы и значки шаха/мата, всё равно они ничего не решают */
+        j = 0;
+        for (k = 0; k < ln; k++) {
+            if (line[k] != 32) { line[j] = line[k]; j++; }
+        }
+        ln = j;
+        while (ln > 0 && (line[ln - 1] == '+' || line[ln - 1] == '#' || line[ln - 1] == '!' || line[ln - 1] == '?')) ln--;
+        line[ln] = 0;
+        r = 0;
+        if (ln > 0) r = parse_move();
+        if (r == 1) {
+            do_move(pm);
+            redraw = 1;
+        } else if (r == 2) {
+            print("Так ходить нельзя. Список ходов: moves."); putnl();
+        } else if (r == 3) {
+            print("Неоднозначный ход, уточни (например, Nbd7 или R1e2, или координатами e2e4)."); putnl();
         } else {
-            p = get(fx, fy);
-            t = get(tx, ty);
-            put(tx, ty, p);
-            put(fx, fy, 46);
-            if (p == 'P' && ty == 7) put(tx, ty, 'Q');
-            if (p == 'p' && ty == 0) put(tx, ty, 'q');
-            if (t == 'k') game_over = 1;
-            if (t == 'K') game_over = 2;
-            moves_done++;
-            turn = 1 - turn;
+            print("Не понял. Пиши e2e4, e4, Nf3, exd5, O-O или e8=Q. Подсказка: help."); putnl();
         }
     }
-    show();
-    if (game_over == 1) print("Король чёрных съеден. Белые победили!");
-    else print("Король белых съеден. Чёрные победили!");
-    putnl();
-    print("Ходов сделано: ");
-    print_num(moves_done);
-    putnl();
     return 0;
 }
 "####;
@@ -6691,7 +8058,7 @@ fn main() {
         };
         bus.attach_disk(disk);
     }
-    let limit: u64 = if play { std::u64::MAX } else { 10_000_000 };
+    let limit: u64 = if play || chess { std::u64::MAX } else { 10_000_000 };
     let mut cpu = cpu::Cpu::new();
     while !cpu.halted && cpu.cycles < limit {
         cpu.step(&mut bus);
@@ -6787,26 +8154,143 @@ mod lua_tests {
         });
     }
 
+    /// Шахматы компилируются один раз на все тесты (компилятор у нас на Lua, он не быстрый).
+    static CHESS_IMAGE: ::std::sync::OnceLock<Vec<u8>> = ::std::sync::OnceLock::new();
+
+    /// Сажает шахматы за стол: скармливает им ввод и возвращает всё, что они напечатали.
+    fn chess_session(input: &str, max_cycles: u64) -> String {
+        let image = CHESS_IMAGE.get_or_init(|| {
+            let asm_text = ::compile_c_big(::CHESS_C.as_bytes().to_vec()).ok().unwrap();
+            asm::assemble(&asm_text).ok().unwrap()
+        });
+        let mut bus = bus::Bus::new(0);
+        bus.load();
+        bus.reset(image);
+        bus.capture_uart();
+        bus.feed_input(input.as_bytes().to_vec());
+        let mut cpu = cpu::Cpu::new();
+        while !cpu.halted && cpu.cycles < max_cycles {
+            cpu.step(&mut bus);
+        }
+        assert!(cpu.halted, "шахматы не дошли до конца за {} тактов", max_cycles);
+        String::from_utf8_lossy(&bus.take_captured()).to_string()
+    }
+
     #[test]
     fn chess_plays_a_scripted_game() {
         run_big(|| {
-            let asm_text = ::compile_c(::CHESS_C.as_bytes()).ok().unwrap();
-            let image = asm::assemble(&asm_text).ok().unwrap();
-            let mut bus = bus::Bus::new(0);
-            bus.load();
-            bus.reset(&image);
-            bus.capture_uart();
-            // e2e4 e7e5, потом нелепость, потом ход чужой фигурой, потом быстрая победа ферзём
-            bus.feed_input(b"e2e4\ne7e5\ne2e4\nd1h5\nb8c6\nf1c4\ng8f6\nh5f7\na7a6\nf7e8\n\n".to_vec());
-            let mut cpu = cpu::Cpu::new();
-            while !cpu.halted && cpu.cycles < 200_000_000 {
-                cpu.step(&mut bus);
-            }
-            assert!(cpu.halted);
-            let out = String::from_utf8_lossy(&bus.take_captured()).to_string();
+            // режим "с человеком"; e2e4 e7e5, потом нелепость, потом быстрая победа ферзём (детский мат)
+            let out = chess_session("1\ne2e4\ne7e5\ne2e4\nd1h5\nb8c6\nf1c4\ng8f6\nh5f7\na7a6\n\n", 200_000_000);
             assert!(out.contains("Так ходить нельзя."), "{}", out);
-            assert!(out.contains("Король чёрных съеден. Белые победили!"), "{}", out);
-            assert!(out.contains("Ходов сделано: 9"), "{}", out);
+            assert!(out.contains("4. Qxf7#"), "{}", out);
+            assert!(out.contains("Мат. Белые победили."), "{}", out);
+            assert!(out.contains("Партия окончена. Скажи new, undo или quit."), "{}", out);
+        });
+    }
+
+    #[test]
+    fn chess_understands_algebraic_notation_and_mates() {
+        run_big(|| {
+            let out = chess_session("1\ne4\ne5\nQh5\nNc6\nBc4\nNf6\nQxf7#\nundo\nundo\nQxf7\n\n", 200_000_000);
+            assert!(out.contains("Последний ход: 4. Qxf7#"), "{}", out);
+            assert!(out.contains("Мат. Белые победили."), "{}", out);
+            // после отката мат пропал, а потом взяли снова
+            assert_eq!(out.matches("Мат. Белые победили.").count(), 1, "{}", out);
+            // непонятное и неоднозначное
+            let out = chess_session("1\nfen 4k3/8/8/8/8/8/8/1N1NK3 w - - 0 1\nNc3\nNbc3\n5a\n\n", 200_000_000);
+            assert!(out.contains("Неоднозначный ход, уточни"), "{}", out);
+            assert!(out.contains("1. Nbc3"), "{}", out);
+            assert!(out.contains("Не понял. Пиши"), "{}", out);
+        });
+    }
+
+    #[test]
+    fn chess_castles_and_refuses_to_castle_under_check() {
+        run_big(|| {
+            let out = chess_session(
+                "1\nfen r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1\nO-O\nundo\nO-O-O\nundo\n\
+                 fen 4k3/8/8/8/8/8/4r3/R3K2R w KQ - 0 1\nO-O\nO-O-O\n\
+                 fen 4k3/8/8/8/8/8/5r2/R3K2R w KQ - 0 1\n0-0\nO-O-O\n\n",
+                200_000_000,
+            );
+            assert!(out.contains("1 ♖ · · · · ♖ ♔ · 1"), "{}", out);
+            assert!(out.contains("1 · · ♔ ♖ · · · ♖ 1"), "{}", out);
+            // после undo королева и король снова дома
+            assert!(out.matches("1 ♖ · · · ♔ · · ♖ 1").count() >= 3, "{}", out);
+            // под шахом нельзя ни так, ни так; через битое поле f1 нельзя коротко, но можно длинно
+            assert_eq!(out.matches("Так ходить нельзя.").count(), 3, "{}", out);
+            assert!(out.contains("Шах!"), "{}", out);
+        });
+    }
+
+    #[test]
+    fn chess_en_passant_and_promotion_with_undo() {
+        run_big(|| {
+            let out = chess_session(
+                "1\nfen 4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1\nexd6\nundo\n\
+                 fen 8/P6k/8/8/8/8/8/4K3 w - - 0 1\na8=N\nundo\na7a8r\nundo\na8\nundo\n\n",
+                200_000_000,
+            );
+            // взятие на проходе: на d6 белая пешка, с d5 чёрная пропала, после undo всё на месте
+            assert!(out.contains("6 · · · ♙ · · · · 6"), "{}", out);
+            assert!(out.contains("5 · · · ♟ ♙ · · · 5"), "{}", out);
+            assert!(out.contains("Последний ход: 1. exd6"), "{}", out);
+            // превращение в коня, ладью и (по умолчанию) ферзя
+            assert!(out.contains("8 ♘ · · · · · · · 8"), "{}", out);
+            assert!(out.contains("8 ♖ · · · · · · · 8"), "{}", out);
+            assert!(out.contains("8 ♕ · · · · · · · 8"), "{}", out);
+            assert!(out.contains("Последний ход: 1. a8=Q"), "{}", out);
+            // конь и король против короля -- ничья по материалу
+            assert!(out.contains("фигур не хватит"), "{}", out);
+            // после undo пешка снова на a7
+            assert!(out.matches("7 ♙ · · · · · · ♚ 7").count() >= 4, "{}", out);
+        });
+    }
+
+    #[test]
+    fn chess_knows_stalemate_and_draws() {
+        run_big(|| {
+            let out = chess_session("1\nfen 7k/5Q2/6K1/8/8/8/8/8 b - - 0 1\n\n", 200_000_000);
+            assert!(out.contains("Пат. Ничья."), "{}", out);
+            let out = chess_session("1\nfen 4k3/8/8/8/8/8/8/R3K3 w - - 99 60\nRa2\n\n", 200_000_000);
+            assert!(out.contains("Ничья по правилу 50 ходов."), "{}", out);
+            let out = chess_session("1\nNf3\nNf6\nNg1\nNg8\nNf3\nNf6\nNg1\nNg8\n\n", 200_000_000);
+            assert!(out.contains("позиция повторилась трижды"), "{}", out);
+            let out = chess_session("1\nfen 4k3/8/8/8/8/8/8/4K3 w - - 0 1\n\n", 200_000_000);
+            assert!(out.contains("фигур не хватит"), "{}", out);
+        });
+    }
+
+    #[test]
+    fn chess_perft_matches_the_wikipedia() {
+        run_big(|| {
+            let out = chess_session(
+                "1\nperft 1\nperft 2\nperft 3\n\
+                 fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -\nperft 1\nperft 2\n\n",
+                400_000_000,
+            );
+            assert!(out.contains("perft 1 = 20"), "{}", out);
+            assert!(out.contains("perft 2 = 400"), "{}", out);
+            assert!(out.contains("perft 3 = 8902"), "{}", out);
+            assert!(out.contains("perft 1 = 48"), "{}", out);
+            assert!(out.contains("perft 2 = 2039"), "{}", out);
+        });
+    }
+
+    #[test]
+    fn chess_computer_plays_legal_moves_and_mates_in_one() {
+        run_big(|| {
+            // человек за белых ходит e4, компьютер (чёрные) отвечает чем-нибудь законным
+            let out = chess_session("2\ne4\nmoves\n\n", 400_000_000);
+            assert!(out.contains("Компьютер думает..."), "{}", out);
+            assert!(out.contains("Всего ходов: "), "{}", out);
+            // у чёрных мат в один ход: Rd1#
+            let out = chess_session("2\nfen 3r2k1/8/8/8/8/8/5PPP/6K1 b - - 0 1\n\n", 400_000_000);
+            assert!(out.contains("ходит Rd1#") || out.contains("ходит Rd1"), "{}", out);
+            assert!(out.contains("Мат. Чёрные победили."), "{}", out);
+            // у чёрных под боем ферзь: Nf3 бьёт Qh4, компьютер обязан его спасти (или взять e4 с шахом)
+            let out = chess_session("2\nfen rnb1kbnr/pppp1ppp/8/4p3/4P2q/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 3\n\n", 400_000_000);
+            assert!(out.contains("ходит Q"), "{}", out);
         });
     }
 
