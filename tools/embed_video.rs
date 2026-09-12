@@ -1,6 +1,7 @@
-// embed_video: вшивает assets/badapple.asc и assets/badapple.snd прямо в исходник.
-// Запуск: embed_video [файл-приёмник] [asc] [snd]    (по умолчанию src/main.rs, assets/badapple.asc, assets/badapple.snd)
+// embed_video: вшивает assets/badapple.asc и assets/badapple.snd в src/badapple.rs.
+// Запуск: embed_video [файл-приёмник] [asc] [snd]    (по умолчанию src/badapple.rs, assets/badapple.asc, assets/badapple.snd)
 // Блок живёт между строками `// @@VIDEO-BEGIN@@` и `// @@VIDEO-END@@`. Если их нет, блок дописывается в конец файла.
+// Видео больше не живёт в main.rs: оно отдельный модуль, и этот скрипт его только пересобирает.
 use std::env;
 use std::fs::File;
 use std::io::Read;
@@ -17,7 +18,7 @@ fn read_all(path: &str) -> Vec<u8> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let target = args.get(1).cloned().unwrap_or("src/main.rs".to_string());
+    let target = args.get(1).cloned().unwrap_or("src/badapple.rs".to_string());
     let asc_path = args.get(2).cloned().unwrap_or("assets/badapple.asc".to_string());
     let snd_path = args.get(3).cloned().unwrap_or("assets/badapple.snd".to_string());
 
@@ -36,16 +37,14 @@ fn main() {
 
     let mut block = String::new();
     block.push_str(BEGIN);
-    block.push_str("// Дальше идёт видео. Целиком. Прямо в исходнике. Листать не обязательно, но можно (дня три).\n");
-    block.push_str("mod video_data {\n");
-    block.push_str("    /// Весь Bad Apple, 4791 кадр ASCII-арта 64x24. Текст, не картинка.\n");
-    block.push_str("    pub const ASC: &'static str = r#\"");
+    block.push_str("/// Весь Bad Apple, 4791 кадр ASCII-арта 64x24. Текст, не картинка.\n");
+    block.push_str("pub const ASC: &'static str = r#\"");
     block.push_str(&asc);
     block.push_str("\"#;\n\n");
-    block.push_str("    /// Звук для каждого кадра: 10 байт, записанные шестнадцатеричными цифрами.\n");
-    block.push_str("    pub const SND_HEX: &'static str = \"");
+    block.push_str("/// Звук для каждого кадра: 10 байт, записанные шестнадцатеричными цифрами.\n");
+    block.push_str("pub const SND_HEX: &'static str = \"");
     block.push_str(&hex);
-    block.push_str("\";\n}\n");
+    block.push_str("\";\n");
     block.push_str(END);
 
     let src = String::from_utf8(read_all(&target)).unwrap();
