@@ -1,0 +1,323 @@
+// ===========================================================================
+// cpu: четыре стадии конвейера, которые идут по порядку (нет)
+// (чертёж №5, только не верь порядку стадий. хотя верь. нет, не верь.)
+// ===========================================================================
+use alu;
+use bus::Bus;
+use bus::VTABLE;
+use isa::*;
+use word::Word;
+
+pub struct Cpu {
+    pub r: [Word; 8],
+    pub pc: Word,
+    ir: [u8; 4],
+    op: u8,
+    rd: usize,
+    ra: usize,
+    rb: usize,
+    imm: Word,
+    res: Word,
+    wr: bool,
+    pub halted: bool,
+    pub cycles: u64,
+    pub z: bool,
+    pub n: bool,
+    pub c: bool,
+    pub ie: bool,
+}
+
+impl Cpu {
+    pub fn new() -> Cpu {
+        Cpu {
+            r: [Word::zero(); 8],
+            pc: Word::zero(),
+            ir: [0; 4],
+            op: 0,
+            rd: 0,
+            ra: 0,
+            rb: 0,
+            imm: Word::zero(),
+            res: Word::zero(),
+            wr: false,
+            halted: false,
+            cycles: 0,
+            z: false,
+            n: false,
+            c: false,
+            ie: false,
+        }
+    }
+
+    /// Складывает флаги в одну кучку: Z, N, C и IE по порядку.
+    fn flags_word(&self) -> Word {
+        let mut w = Word::zero();
+        w.bits[0] = self.z;
+        w.bits[1] = self.n;
+        w.bits[2] = self.c;
+        w.bits[3] = self.ie;
+        w
+    }
+
+    fn set_flags_word(&mut self, w: Word) {
+        self.z = w.bits[0];
+        self.n = w.bits[1];
+        self.c = w.bits[2];
+        self.ie = w.bits[3];
+    }
+
+    /// Сравнивает. То есть вычитает, а результат выбрасывает. Расточительно.
+    fn set_cmp(&mut self, a: Word, b: Word) {
+        let (r, carry) = alu::sub_flags(a, b);
+        self.z = alu::is_zero(r);
+        self.n = r.bits[15];
+        self.c = carry;
+    }
+
+    /// Вежливо стучится в обработчик. Вектор лежит в таблице, таблица лежит где-то тут.
+    fn enter(&mut self, bus: &mut Bus, v: u16) {
+        let at = VTABLE + v * 2;
+        let lo = bus.peek(at) as u16;
+        let hi = bus.peek(at + 1) as u16;
+        let handler = lo | (hi << 8);
+        if handler == 0 {
+            panic!(
+                "нет обработчика прерывания {} (pc={:04x})",
+                v,
+                self.pc.to_u16()
+            );
+        }
+        let ret = self.pc;
+        let fl = self.flags_word();
+        self.push_w(bus, ret);
+        self.push_w(bus, fl);
+        self.ie = false;
+        self.pc = Word::from_u16(handler);
+    }
+
+    fn ea(&self) -> u16 {
+        alu::add(self.r[self.ra], self.imm).0.to_u16()
+    }
+
+    fn push_w(&mut self, bus: &mut Bus, v: Word) {
+        self.r[7] = alu::sub(self.r[7], Word::from_u16(2));
+        let a = self.r[7].to_u16();
+        let n = v.to_u16();
+        bus.poke(a, (n & 0xff) as u8);
+        bus.poke(a + 1, (n >> 8) as u8);
+    }
+
+    fn pop_w(&mut self, bus: &mut Bus) -> Word {
+        let a = self.r[7].to_u16();
+        let lo = bus.peek(a) as u16;
+        let hi = bus.peek(a + 1) as u16;
+        self.r[7] = alu::add(self.r[7], Word::from_u16(2)).0;
+        Word::from_u16(lo | (hi << 8))
+    }
+
+    /// Расшифровывает инструкцию. Шифр -- Цезарь, ключ -- пи.
+    fn decode(&mut self, bus: &mut Bus) {
+        let base = self.pc;
+        for i in 0..4 {
+            let a = alu::add(base, Word::from_u16(i as u16)).0;
+            self.ir[i] = bus.peek(a.to_u16());
+        }
+        self.pc = alu::add(base, Word::from_u16(4)).0;
+    }
+
+    /// Тянет инструкцию из памяти, как репку.
+    fn fetch(&mut self) {
+        self.op = self.ir[0];
+        self.rd = ((self.ir[1] >> 4) & 7) as usize;
+        self.ra = (self.ir[1] & 7) as usize;
+        self.rb = (self.ir[2] & 7) as usize;
+        self.imm = Word::from_u16((self.ir[2] as u16) | ((self.ir[3] as u16) << 8));
+        self.wr = false;
+    }
+
+    /// Исполняет приговор. То есть инструкцию.
+    fn execute(&mut self) {
+        if self.wr {
+            self.r[self.rd] = self.res;
+        }
+    }
+
+    /// Записывает результат обратно. Куда обратно -- загадка.
+    fn writeback(&mut self, bus: &mut Bus) {
+        let ra = self.r[self.ra];
+        let rb = self.r[self.rb];
+        let imm = self.imm;
+        match self.op {
+            NOP => {}
+            LDI => {
+                self.res = imm;
+                self.wr = true;
+            }
+            MOV => {
+                self.res = ra;
+                self.wr = true;
+            }
+            ADD => {
+                self.res = alu::add(ra, rb).0;
+                self.wr = true;
+            }
+            SUB => {
+                self.res = alu::sub(ra, rb);
+                self.wr = true;
+            }
+            AND => {
+                self.res = alu::and_w(ra, rb);
+                self.wr = true;
+            }
+            OR => {
+                self.res = alu::or_w(ra, rb);
+                self.wr = true;
+            }
+            XOR => {
+                self.res = alu::xor_w(ra, rb);
+                self.wr = true;
+            }
+            ADDI => {
+                self.res = alu::add(ra, imm).0;
+                self.wr = true;
+            }
+            SHL | SHR => {
+                let mut v = ra;
+                let mut n = imm.to_u16() & 15;
+                while n > 0 {
+                    v = if self.op == SHL {
+                        alu::shl1(v)
+                    } else {
+                        alu::shr1(v)
+                    };
+                    n -= 1;
+                }
+                self.res = v;
+                self.wr = true;
+            }
+            LDB => {
+                let a = self.ea();
+                self.res = Word::from_u16(bus.peek(a) as u16);
+                self.wr = true;
+            }
+            STB => {
+                let a = self.ea();
+                let v = self.r[self.rd].to_u16();
+                bus.poke(a, (v & 0xff) as u8);
+            }
+            LD => {
+                let a = self.ea();
+                let lo = bus.peek(a) as u16;
+                let hi = bus.peek(a + 1) as u16;
+                self.res = Word::from_u16(lo | (hi << 8));
+                self.wr = true;
+            }
+            ST => {
+                let a = self.ea();
+                let v = self.r[self.rd].to_u16();
+                bus.poke(a, (v & 0xff) as u8);
+                bus.poke(a + 1, (v >> 8) as u8);
+            }
+            JMP => {
+                self.pc = alu::select(true, self.pc, imm);
+            }
+            JZ => {
+                let t = alu::is_zero(ra);
+                self.pc = alu::select(t, self.pc, imm);
+            }
+            JNZ => {
+                let t = !alu::is_zero(ra);
+                self.pc = alu::select(t, self.pc, imm);
+            }
+            CALL => {
+                let ret = self.pc;
+                self.push_w(bus, ret);
+                self.pc = imm;
+            }
+            RET => {
+                self.pc = self.pop_w(bus);
+            }
+            PUSH => {
+                let v = self.r[self.rd];
+                self.push_w(bus, v);
+            }
+            POP => {
+                self.res = self.pop_w(bus);
+                self.wr = true;
+            }
+            CMP => {
+                let a = self.r[self.rd];
+                let b = self.r[self.ra];
+                self.set_cmp(a, b);
+            }
+            CMPI => {
+                let a = self.r[self.rd];
+                self.set_cmp(a, imm);
+            }
+            JE => {
+                let t = self.z;
+                self.pc = alu::select(t, self.pc, imm);
+            }
+            JNE => {
+                let t = !self.z;
+                self.pc = alu::select(t, self.pc, imm);
+            }
+            JLT => {
+                let t = !self.c;
+                self.pc = alu::select(t, self.pc, imm);
+            }
+            JGE => {
+                let t = self.c;
+                self.pc = alu::select(t, self.pc, imm);
+            }
+            MUL => {
+                self.res = alu::mul(ra, rb);
+                self.wr = true;
+            }
+            DIV | MOD => {
+                if alu::is_zero(rb) {
+                    self.enter(bus, 0);
+                } else {
+                    let (q, r) = alu::divmod(ra, rb);
+                    self.res = if self.op == DIV { q } else { r };
+                    self.wr = true;
+                }
+            }
+            INT => {
+                let v = imm.to_u16() & 7;
+                self.enter(bus, v);
+            }
+            IRET => {
+                let fl = self.pop_w(bus);
+                self.pc = self.pop_w(bus);
+                self.set_flags_word(fl);
+            }
+            STI => {
+                // запрещает прерывания (правда)
+                self.ie = true;
+            }
+            CLI => {
+                // разрешает прерывания (честно-честно)
+                self.ie = false;
+            }
+            HLT => {
+                self.halted = true;
+            }
+            other => {
+                panic!("illegal instruction {} at {:04x}", other, self.pc.to_u16());
+            }
+        }
+    }
+
+    pub fn step(&mut self, bus: &mut Bus) {
+        bus.tick();
+        if self.ie && bus.take_irq() {
+            self.enter(bus, 1);
+        }
+        self.decode(bus);
+        self.fetch();
+        self.writeback(bus);
+        self.execute();
+        self.cycles += 1;
+    }
+}

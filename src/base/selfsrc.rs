@@ -1,0 +1,42 @@
+// ===========================================================================
+// selfsrc: исходник этого самого проекта. Он читает себя целиком, файл за
+// файлом, в порядке, который лежит в base/order.txt (сам входит в склейку).
+// ===========================================================================
+
+pub fn self_src() -> String {
+    let mut s = String::new();
+    s.push_str(include_str!("../main.rs"));
+    s.push_str(include_str!("../tests.rs"));
+    s.push_str(include_str!("../hw/mod.rs"));
+    s.push_str(include_str!("../hw/gates.rs"));
+    s.push_str(include_str!("../hw/word.rs"));
+    s.push_str(include_str!("../hw/alu.rs"));
+    s.push_str(include_str!("../hw/isa.rs"));
+    s.push_str(include_str!("../hw/cpu.rs"));
+    s.push_str(include_str!("../hw/bus.rs"));
+    s.push_str(include_str!("../toolchain/mod.rs"));
+    s.push_str(include_str!("../toolchain/asm.rs"));
+    s.push_str(include_str!("../toolchain/pack.rs"));
+    s.push_str(include_str!("../toolchain/cc.rs"));
+    s.push_str(include_str!("../toolchain/cc.lua"));
+    s.push_str(include_str!("../lang/mod.rs"));
+    s.push_str(include_str!("../lang/lua/mod.rs"));
+    s.push_str(include_str!("../apps/mod.rs"));
+    s.push_str(include_str!("../apps/hello.asm"));
+    s.push_str(include_str!("../apps/hello.c"));
+    s.push_str(include_str!("../apps/quine.c"));
+    s.push_str(include_str!("../apps/quine.lua"));
+    s.push_str(include_str!("../apps/chess.c"));
+    s.push_str(include_str!("../apps/selftest.asm"));
+    s.push_str(include_str!("../apps/player.asm"));
+    s.push_str(include_str!("../junk/mod.rs"));
+    s.push_str(include_str!("../junk/bubble.rs"));
+    s.push_str(include_str!("../data/mod.rs"));
+    s.push_str(include_str!("../data/badapple.rs"));
+    s.push_str(include_str!("../util/mod.rs"));
+    s.push_str(include_str!("../util/hex.rs"));
+    s.push_str(include_str!("../base/mod.rs"));
+    s.push_str(include_str!("../base/cli.rs"));
+    s.push_str(include_str!("../base/selfsrc.rs"));
+    s
+}

@@ -1,5 +1,5 @@
-// embed_video: вшивает assets/badapple.asc и assets/badapple.snd в src/badapple.rs.
-// Запуск: embed_video [файл-приёмник] [asc] [snd]    (по умолчанию src/badapple.rs, assets/badapple.asc, assets/badapple.snd)
+// embed_video: вшивает assets/badapple.asc и assets/badapple.snd в src/data/badapple.rs.
+// Запуск: embed_video [файл-приёмник] [asc] [snd]    (по умолчанию src/data/badapple.rs, assets/badapple.asc, assets/badapple.snd)
 // Блок живёт между строками `// @@VIDEO-BEGIN@@` и `// @@VIDEO-END@@`. Если их нет, блок дописывается в конец файла.
 // Видео больше не живёт в main.rs: оно отдельный модуль, и этот скрипт его только пересобирает.
 use std::env;
@@ -18,7 +18,7 @@ fn read_all(path: &str) -> Vec<u8> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let target = args.get(1).cloned().unwrap_or("src/badapple.rs".to_string());
+    let target = args.get(1).cloned().unwrap_or("src/data/badapple.rs".to_string());
     let asc_path = args.get(2).cloned().unwrap_or("assets/badapple.asc".to_string());
     let snd_path = args.get(3).cloned().unwrap_or("assets/badapple.snd".to_string());
 

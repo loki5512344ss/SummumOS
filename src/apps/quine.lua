@@ -1,0 +1,1 @@
+local s="local s=%s io.write(string.format(s,string.format('%%q',s)))" io.write(string.format(s,string.format('%q',s)))
