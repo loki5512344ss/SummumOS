@@ -14,13 +14,16 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../hw/isa.rs"));
     s.push_str(include_str!("../hw/cpu.rs"));
     s.push_str(include_str!("../hw/bus.rs"));
+    s.push_str(include_str!("../hw/guard.rs"));
     s.push_str(include_str!("../toolchain/mod.rs"));
     s.push_str(include_str!("../toolchain/asm.rs"));
     s.push_str(include_str!("../toolchain/pack.rs"));
     s.push_str(include_str!("../toolchain/cc.rs"));
     s.push_str(include_str!("../toolchain/cc.lua"));
+    s.push_str(include_str!("../toolchain/guard.rs"));
     s.push_str(include_str!("../lang/mod.rs"));
     s.push_str(include_str!("../lang/lua/mod.rs"));
+    s.push_str(include_str!("../lang/guard.rs"));
     s.push_str(include_str!("../apps/mod.rs"));
     s.push_str(include_str!("../apps/hello.asm"));
     s.push_str(include_str!("../apps/hello.c"));
@@ -29,14 +32,23 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../apps/chess.c"));
     s.push_str(include_str!("../apps/selftest.asm"));
     s.push_str(include_str!("../apps/player.asm"));
+    s.push_str(include_str!("../apps/guard.rs"));
     s.push_str(include_str!("../junk/mod.rs"));
     s.push_str(include_str!("../junk/bubble.rs"));
+    s.push_str(include_str!("../junk/guard.rs"));
     s.push_str(include_str!("../data/mod.rs"));
     s.push_str(include_str!("../data/badapple.rs"));
+    s.push_str(include_str!("../data/guard.rs"));
     s.push_str(include_str!("../util/mod.rs"));
     s.push_str(include_str!("../util/hex.rs"));
+    s.push_str(include_str!("../util/check.rs"));
+    s.push_str(include_str!("../util/guard.rs"));
     s.push_str(include_str!("../base/mod.rs"));
     s.push_str(include_str!("../base/cli.rs"));
     s.push_str(include_str!("../base/selfsrc.rs"));
+    s.push_str(include_str!("../base/comments.rs"));
+    s.push_str(include_str!("../base/lies.rs"));
+    s.push_str(include_str!("../base/guard.rs"));
+    s.push_str(include_str!("../boss.rs"));
     s
 }

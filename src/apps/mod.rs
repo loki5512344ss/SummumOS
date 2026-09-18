@@ -48,3 +48,4 @@ pub fn quine_main() -> i32 {
     say(SELF_SRC_S.starts_with("// ===="), "main.rs прочитал сам себя и начинается как положено");
     if ok { 0 } else { 1 }
 }
+pub mod guard;

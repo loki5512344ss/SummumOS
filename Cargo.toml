@@ -3,10 +3,27 @@ name = "helloos"
 version = "0.1.0"
 authors = ["nobody <nobody@localhost>"]
 edition = "2015"
+default-run = "helloos"
 
 [[bin]]
 name = "helloos"
 path = "src/main.rs"
+
+[[bin]]
+name = "mkvideo"
+path = "tools/mkvideo.rs"
+
+[[bin]]
+name = "mkaudio"
+path = "tools/mkaudio.rs"
+
+[[bin]]
+name = "embed_video"
+path = "tools/embed_video.rs"
+
+[[bin]]
+name = "seal"
+path = "tools/seal.rs"
 
 [profile.release]
 opt-level = 1

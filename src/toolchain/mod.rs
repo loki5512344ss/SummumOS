@@ -2,3 +2,4 @@
 pub mod asm;
 pub mod pack;
 pub mod cc;
+pub mod guard;

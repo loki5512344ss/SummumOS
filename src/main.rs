@@ -99,6 +99,7 @@ mod junk;
 mod data;
 mod util;
 mod base;
+mod boss;
 #[cfg(test)]
 mod tests;
 
@@ -112,12 +113,27 @@ pub use data::badapple;
 pub use apps::*;
 pub use base::cli::*;
 pub use base::selfsrc::self_src;
+pub use base::comments;
 pub use util::hex::*;
 
 fn main() {
+    // Босс садится первым. Если кто-то из охранников не ответил -- дальше не поедем.
+    boss::sit();
+
     // прогреваем бесполезности, чтобы потом не было стыдно
     let _ = bubble::run_all();
     let args: Vec<String> = std::env::args().collect();
+
+    // Проверка, что шапка с портретом и баннером никуда не убежала.
+    if args.iter().any(|a| a == "--comment-sum") {
+        let z = comments::zhivaya();
+        println!("{:#06x} {:#06x}", z.0, z.1);
+        return;
+    }
+    if !comments::vse_na_meste() {
+        writeln!(std::io::stderr(), "Комментарии убежали. Верните портрет на место, иначе не поедем.").unwrap();
+        std::process::exit(3);
+    }
 
     // Приветствие при запуске. Надпись лежит отдельным файлом: её рисовал не
     // этот проект, а временный скрипт с pyfiglet (руками шрифт не рисовали,
