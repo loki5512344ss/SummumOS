@@ -134,6 +134,23 @@ fn main() {
         }
     }
 
+    // Свой терминал: отдельное окно X11, свой шрифт и сетка. Без флагов --
+    // именно он, если есть DISPLAY. --term включает принудительно, --plain
+    // возвращает старое поведение (Hello, World! в этом терминале).
+    let wants_term = args.iter().any(|a| a == "--term")
+        || (args.len() == 1
+            && std::env::var("DISPLAY").is_ok()
+            && std::env::var("SUMMUM_PLAIN").is_err());
+    if wants_term {
+        let auto = args.iter().any(|a| a == "--badapple") || args.iter().any(|a| a == "play");
+        match term::run(auto) {
+            Ok(_) => return,
+            Err(e) => {
+                writeln!(std::io::stderr(), "свой терминал не открылся: {}. Работаем в обычном.", e).unwrap();
+            }
+        }
+    }
+
     // прогреваем бесполезности, чтобы потом не было стыдно
     let _ = bubble::run_all();
 

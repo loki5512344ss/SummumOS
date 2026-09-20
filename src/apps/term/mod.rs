@@ -1,0 +1,356 @@
+// ===========================================================================
+// term: свой терминал. Отдельное окно X11, своя сетка 100x30, свой шрифт 8x16,
+// свои клавиши. Хост-терминал тут не участвует (чертёж №19).
+// Внутри живёт шелл и мини-плеер Bad Apple.
+// ===========================================================================
+pub mod font;
+pub mod player;
+pub mod x11;
+
+use std::time::Instant;
+use self::x11::Key;
+
+pub const COLORS: [u32; 16] = [
+    0x000000, 0xcc3333, 0x33cc33, 0xcccc33, 0x3333cc, 0xcc33cc, 0x33cccc, 0xcccccc,
+    0x555555, 0xff5555, 0x55ff55, 0xffff55, 0x5555ff, 0xff55ff, 0x55ffff, 0xffffff,
+];
+
+#[derive(Clone, Copy)]
+pub struct Cell {
+    pub ch: u8,
+    pub fg: u8,
+    pub bg: u8,
+}
+
+pub struct Term {
+    pub w: usize,
+    pub h: usize,
+    pub cells: Vec<Cell>,
+    pub cx: usize,
+    pub cy: usize,
+    esc: bool,
+}
+
+impl Term {
+    pub fn new(w: usize, h: usize) -> Term {
+        Term { w: w, h: h, cells: vec![Cell { ch: b' ', fg: 7, bg: 0 }; w * h], cx: 0, cy: 0, esc: false }
+    }
+
+    pub fn clear(&mut self) {
+        for c in self.cells.iter_mut() {
+            c.ch = b' ';
+            c.fg = 7;
+            c.bg = 0;
+        }
+        self.cx = 0;
+        self.cy = 0;
+        self.esc = false;
+    }
+
+    pub fn put(&mut self, x: usize, y: usize, ch: u8, fg: u8, bg: u8) {
+        if x < self.w && y < self.h {
+            let i = y * self.w + x;
+            self.cells[i].ch = ch;
+            self.cells[i].fg = fg;
+            self.cells[i].bg = bg;
+        }
+    }
+
+    pub fn put_str(&mut self, x: usize, y: usize, s: &str, fg: u8, bg: u8) {
+        for (i, b) in s.bytes().enumerate() {
+            self.put(x + i, y, b, fg, bg);
+        }
+    }
+
+    fn newline(&mut self) {
+        self.cx = 0;
+        self.cy += 1;
+        if self.cy >= self.h {
+            self.scroll();
+            self.cy = self.h - 1;
+        }
+    }
+
+    pub fn scroll(&mut self) {
+        for y in 1..self.h {
+            for x in 0..self.w {
+                self.cells[(y - 1) * self.w + x] = self.cells[y * self.w + x];
+            }
+        }
+        for x in 0..self.w {
+            self.cells[(self.h - 1) * self.w + x] = Cell { ch: b' ', fg: 7, bg: 0 };
+        }
+    }
+
+    /// Пишет байты как терминал: перевод строки, возврат каретки, backspace.
+    /// ESC-последовательности выкидываем: цветов у нас своих хватает.
+    pub fn write(&mut self, data: &[u8]) {
+        for &b in data {
+            if self.esc {
+                if b >= 0x40 && b <= 0x7e {
+                    self.esc = false;
+                }
+                continue;
+            }
+            match b {
+                0x1b => self.esc = true,
+                b'\n' => self.newline(),
+                b'\r' => self.cx = 0,
+                0x08 => {
+                    if self.cx > 0 {
+                        self.cx -= 1;
+                    }
+                }
+                b'\t' => {
+                    let n = 4 - (self.cx % 4);
+                    for _ in 0..n {
+                        self.put(self.cx, self.cy, b' ', 7, 0);
+                        self.cx += 1;
+                    }
+                    if self.cx >= self.w {
+                        self.newline();
+                    }
+                }
+                _ => {
+                    self.put(self.cx, self.cy, b, 7, 0);
+                    self.cx += 1;
+                    if self.cx >= self.w {
+                        self.newline();
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn write_str(&mut self, s: &str) {
+        self.write(s.as_bytes());
+    }
+}
+
+/// Раскладывает сетку в пиксели. Шрифт 8x16, биты в строке слева направо.
+pub fn render(term: &Term, px: &mut [u32]) {
+    let stride = term.w * 8;
+    for y in 0..term.h {
+        for x in 0..term.w {
+            let cell = term.cells[y * term.w + x];
+            let fg = COLORS[(cell.fg & 15) as usize];
+            let bg = COLORS[(cell.bg & 15) as usize];
+            let glyph = &font::FONT8X16[cell.ch as usize];
+            for row in 0..16 {
+                let bits = glyph[row];
+                let base = (y * 16 + row) * stride + x * 8;
+                for col in 0..8 {
+                    let on = bits & (0x80 >> col) != 0;
+                    px[base + col] = if on { fg } else { bg };
+                }
+            }
+        }
+    }
+}
+
+enum Mode {
+    Shell,
+    Player(player::Player),
+}
+
+struct Shell {
+    line: Vec<u8>,
+    mode: Mode,
+}
+
+impl Shell {
+    fn new() -> Shell {
+        Shell { line: Vec::new(), mode: Mode::Shell }
+    }
+
+    fn banner(&self, term: &mut Term) {
+        term.clear();
+        term.put_str(2, 1, "SummumOS // own terminal, not yours", 11, 0);
+        term.put_str(2, 2, "a window, a font, a machine from NAND", 8, 0);
+        term.put_str(2, 4, "commands: help  hello  play [file.bav]  clear  quit", 7, 0);
+        term.put_str(2, 5, "player:   space play/pause, left/right seek, s stop, home restart, q quit", 7, 0);
+        term.put_str(2, 7, "summum> ", 10, 0);
+        term.cx = 8;
+        term.cy = 7;
+    }
+
+    fn prompt(&mut self, term: &mut Term) {
+        if term.cy >= term.h - 1 {
+            term.scroll();
+            term.cy = term.h - 1;
+        }
+        term.cx = 0;
+        term.put_str(0, term.cy, "summum> ", 10, 0);
+        term.cx = 8;
+    }
+
+    /// Возвращает false, если терминал пора закрывать.
+    fn key(&mut self, k: Key, term: &mut Term) -> bool {
+        match self.mode {
+            Mode::Player(_) => {
+                let quit = {
+                    if let Mode::Player(ref mut p) = self.mode {
+                        !p.key(&k)
+                    } else {
+                        false
+                    }
+                };
+                if quit {
+                    self.mode = Mode::Shell;
+                    self.banner(term);
+                }
+            }
+            Mode::Shell => match k {
+                Key::Char(b) => {
+                    if b >= 32 && b < 127 && term.cx < term.w - 1 {
+                        term.put(term.cx, term.cy, b, 15, 0);
+                        term.cx += 1;
+                        self.line.push(b);
+                    }
+                }
+                Key::Backspace => {
+                    if self.line.len() > 0 {
+                        self.line.pop();
+                        if term.cx > 8 {
+                            term.cx -= 1;
+                            term.put(term.cx, term.cy, b' ', 7, 0);
+                        }
+                    }
+                }
+                Key::Enter => {
+                    term.write_str("\n");
+                    let cmd = String::from_utf8_lossy(&self.line).trim().to_string();
+                    self.line.clear();
+                    if !self.run(&cmd, term) {
+                        return false;
+                    }
+                    self.prompt(term);
+                }
+                Key::Escape => return false,
+                _ => {}
+            },
+        }
+        true
+    }
+
+    fn tick(&mut self, term: &mut Term, dt: f64) {
+        match self.mode {
+            Mode::Player(ref mut p) => p.tick(dt),
+            Mode::Shell => {}
+        }
+        match self.mode {
+            Mode::Player(ref p) => p.draw(term),
+            Mode::Shell => {}
+        }
+    }
+
+    fn run(&mut self, cmd: &str, term: &mut Term) -> bool {
+        let mut it = cmd.split_whitespace();
+        let head = it.next().unwrap_or("");
+        match head {
+            "" => {}
+            "help" => {
+                term.write_str("help -- this text\n");
+                term.write_str("hello -- Hello, World! on the NAND CPU\n");
+                term.write_str("play [file.bav] -- Bad Apple: stop/play/seek/progress\n");
+                term.write_str("clear -- clear the screen\n");
+                term.write_str("quit -- leave this terminal\n");
+            }
+            "clear" => term.clear(),
+            "hello" => {
+                match run_hello() {
+                    Ok(out) => term.write(&out),
+                    Err(e) => {
+                        term.write_str("cpu: ");
+                        term.write_str(&e);
+                        term.write_str("\n");
+                    }
+                }
+            }
+            "play" => {
+                let path = it.next();
+                let p = match path {
+                    Some(p) => player::Player::from_file(p),
+                    None => player::Player::from_embedded(),
+                };
+                match p {
+                    Ok(mut p) => {
+                        p.open_audio();
+                        self.mode = Mode::Player(p);
+                        term.clear();
+                    }
+                    Err(e) => {
+                        term.write_str("player: ");
+                        term.write_str(&e);
+                        term.write_str("\n");
+                    }
+                }
+            }
+            "quit" | "exit" => return false,
+            other => {
+                term.write_str("unknown command ");
+                term.write_str(other);
+                term.write_str("; try help\n");
+            }
+        }
+        true
+    }
+}
+
+/// Гоняет Hello, World! на настоящем процессоре, вывод забирает в память.
+fn run_hello() -> Result<Vec<u8>, String> {
+    let image = ::asm::assemble(::HELLO)?;
+    let mut bus = ::bus::Bus::new(0);
+    bus.load();
+    bus.reset(&image);
+    bus.capture_uart();
+    let mut cpu = ::cpu::Cpu::new();
+    while !cpu.halted && cpu.cycles < 5_000_000 {
+        cpu.step(&mut bus);
+    }
+    if !cpu.halted {
+        return Err("machine did not halt".to_string());
+    }
+    Ok(bus.take_captured())
+}
+
+/// Запуск своего терминала. auto_play -- сразу открыть Bad Apple.
+pub fn run(auto_play: bool) -> Result<(), String> {
+    let mut win = x11::X11::open(100, 30)?;
+    let mut term = Term::new(100, 30);
+    let mut shell = Shell::new();
+    shell.banner(&mut term);
+    if auto_play {
+        match player::Player::from_embedded() {
+            Ok(mut p) => {
+                p.open_audio();
+                shell.mode = Mode::Player(p);
+                term.clear();
+            }
+            Err(e) => {
+                term.write_str("player: ");
+                term.write_str(&e);
+            }
+        }
+    }
+    let mut last = Instant::now();
+    loop {
+        if win.closed {
+            break;
+        }
+        let keys = win.poll();
+        for k in keys {
+            if !shell.key(k, &mut term) {
+                return Ok(());
+            }
+        }
+        let now = Instant::now();
+        let dt = now.duration_since(last).as_secs_f64();
+        last = now;
+        shell.tick(&mut term, dt);
+        render(&term, &mut win.pixels);
+        win.present();
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
+    Ok(())
+}

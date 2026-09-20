@@ -22,6 +22,10 @@ name = "embed_video"
 path = "tools/embed_video.rs"
 
 [[bin]]
+name = "mkfont"
+path = "tools/mkfont.rs"
+
+[[bin]]
 name = "seal"
 path = "tools/seal.rs"
 

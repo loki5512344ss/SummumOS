@@ -49,3 +49,4 @@ pub fn quine_main() -> i32 {
     if ok { 0 } else { 1 }
 }
 pub mod guard;
+pub mod term;

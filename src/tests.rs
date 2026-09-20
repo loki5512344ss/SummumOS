@@ -102,6 +102,80 @@ mod prikol_tests {
 }
 
 #[cfg(test)]
+mod term_tests {
+    use term;
+    use term::player::Player;
+    use term::Term;
+    use term::x11::Key;
+
+    fn tiny_bav(frames: usize, fill: u8) -> Vec<u8> {
+        let mut d: Vec<u8> = Vec::new();
+        d.extend_from_slice(b"BAV2");
+        d.push(64);
+        d.push(24);
+        d.push(15);
+        d.push(0);
+        d.push((frames & 0xff) as u8);
+        d.push((frames >> 8) as u8);
+        for _ in 0..frames {
+            let mut left = 64 * 24;
+            while left > 0 {
+                let run = if left > 255 { 255 } else { left };
+                d.push(run as u8);
+                d.push(fill);
+                left -= run;
+            }
+            for _ in 0..10 {
+                d.push(0);
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn bav2_decodes_and_player_controls_work() {
+        let p = Player::from_bav(&tiny_bav(30, b'#'), "t".to_string()).ok().unwrap();
+        assert_eq!(p.frame, 0);
+        assert_eq!(p.total_for_test(), 30);
+        let mut p = p;
+        p.tick(0.5);
+        assert_eq!(p.frame, 7);
+        p.key(&Key::Char(b' '));
+        p.tick(1.0);
+        assert_eq!(p.frame, 7, "на паузе кадр не должен меняться");
+        p.key(&Key::Right);
+        assert_eq!(p.frame, 29, "перемотка не должна вылезать за конец");
+        p.key(&Key::Home);
+        assert_eq!(p.frame, 0);
+        p.key(&Key::Char(b's'));
+        assert_eq!(p.frame, 0);
+        assert!(!p.key(&Key::Char(b'q')));
+    }
+
+    #[test]
+    fn term_writes_grid_and_renders_pixels() {
+        let mut t = Term::new(20, 5);
+        t.write_str("ab\ncd");
+        assert_eq!(t.cells[0].ch, b'a');
+        assert_eq!(t.cells[20].ch, b'c');
+        assert_eq!(t.cx, 2);
+        assert_eq!(t.cy, 1);
+        let mut px = vec![0u32; 20 * 8 * 5 * 16];
+        term::render(&t, &mut px);
+        assert!(px.iter().any(|p| *p != 0), "буквы должны стать пикселями");
+    }
+
+    #[test]
+    fn player_draws_frame_into_term() {
+        let p = Player::from_bav(&tiny_bav(1, b'#'), "t".to_string()).ok().unwrap();
+        let mut t = Term::new(100, 30);
+        p.draw(&mut t);
+        assert_eq!(t.cells[18].ch, b'#');
+        assert!(t.cells[0].ch == b' ' || t.cells[0].ch == b'#');
+    }
+}
+
+#[cfg(test)]
 mod lua_tests {
     use asm;
     use bus;

@@ -457,6 +457,44 @@ impl Bus {
         }
     }
 
+    /// Проигрывает один кадр звука из видео: 10 байт регистров PSG, затем
+    /// RATE/fps сэмплов. Громкость 0..10 масштабирует PCM вокруг тишины.
+    pub fn audio_frame(&mut self, regs: &[u8], fps: u64, volume: u8) {
+        for i in 0..10usize {
+            let v = *regs.get(i).unwrap_or(&0);
+            self.poke(PSG_BASE + i as u16, v);
+        }
+        self.poke(PSG_BASE + 10, 1);
+        let fps = if fps == 0 { 15 } else { fps };
+        let n = (RATE as u64 / fps) as usize;
+        let mut pcm = self.render(n);
+        if volume == 0 {
+            for x in pcm.iter_mut() {
+                *x = 128;
+            }
+        } else if volume < 10 {
+            for x in pcm.iter_mut() {
+                let v = *x as i32 - 128;
+                let s = 128 + v * volume as i32 / 10;
+                *x = if s < 0 { 0 } else if s > 255 { 255 } else { s as u8 };
+            }
+        }
+        let wants = match self.sink {
+            Sink::Off => false,
+            _ => true,
+        };
+        if !wants {
+            return;
+        }
+        match self.sink {
+            Sink::Pipe(_, ref mut stdin) => {
+                let _ = stdin.write_all(&pcm);
+            }
+            Sink::Wav(ref mut v) => v.extend(pcm),
+            Sink::Off => {}
+        }
+    }
+
     /// Убирает за собой: возвращает курсор, который мы спрятали.
     pub fn finish(&mut self) {
         let sink = std::mem::replace(&mut self.sink, Sink::Off);
