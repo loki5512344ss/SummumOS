@@ -311,8 +311,13 @@ impl Cpu {
 
     pub fn step(&mut self, bus: &mut Bus) {
         bus.tick();
-        if self.ie && bus.take_irq() {
-            self.enter(bus, 1);
+        if self.ie {
+            // сначала страшное, потом простое
+            if bus.take_fault() {
+                self.enter(bus, 5);
+            } else if bus.take_irq() {
+                self.enter(bus, 1);
+            }
         }
         self.decode(bus);
         self.fetch();

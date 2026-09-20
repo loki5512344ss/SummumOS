@@ -24,6 +24,15 @@ pub const VRAM: u16 = 0xF000;
 pub const VID_W: usize = 64;
 pub const VID_H: usize = 24;
 pub const VID_CTL: u16 = 0xFF20;
+/// Регистры новых железок: генератор случайных чисел и кэш с MMU.
+pub const RNG: u16 = 0xFF21;
+pub const CACHE_HIT: u16 = 0xFF22;
+pub const CACHE_MISS: u16 = 0xFF23;
+pub const MMU_CTL: u16 = 0xFF24;
+pub const MMU_FAULT: u16 = 0xFF25;
+/// Страницы по 256 байт, таблица на 256 записей (по две байта): 0xFB00..0xFD00.
+pub const PAGE_TABLE: u16 = 0xFB00;
+pub const PAGE_SIZE: usize = 256;
 pub const DISK_A0: u16 = 0xFF30;
 pub const DISK_A1: u16 = 0xFF31;
 pub const DISK_A2: u16 = 0xFF32;
@@ -61,6 +70,28 @@ pub struct Timer {
     count: u16,
     en: bool,
     irq: bool,
+}
+
+/// Кэш прямого отображения: 64 строки по 8 байт. Промах не только тормозит,
+/// но и двигает таймер: так тайминги становятся честно непредсказуемыми.
+pub struct Cache {
+    tag: [u16; 64],
+    valid: [bool; 64],
+    data: [[u8; 8]; 64],
+    pub hits: u64,
+    pub misses: u64,
+}
+
+impl Cache {
+    fn new() -> Cache {
+        Cache {
+            tag: [0; 64],
+            valid: [false; 64],
+            data: [[0; 8]; 64],
+            hits: 0,
+            misses: 0,
+        }
+    }
 }
 
 pub struct Uart {
@@ -102,6 +133,10 @@ pub struct Bus {
     disk_addr: u32,
     input: Option<(Vec<u8>, usize)>,
     pub clock: u64,
+    rng: u16,
+    mmu: bool,
+    fault: bool,
+    pub cache: Cache,
 }
 
 impl Bus {
@@ -140,7 +175,86 @@ impl Bus {
             disk_addr: 0,
             input: None,
             clock: 0,
+            rng: 0xACE1,
+            mmu: false,
+            fault: false,
+            cache: Cache::new(),
         }
+    }
+
+    /// Один шаг LFSR: 16 бит, отводы 1, 3, 4, 6 (по-человечески -- 0, 2, 3, 5).
+    fn rng_next(&mut self) -> u8 {
+        let bit = ((self.rng >> 0) ^ (self.rng >> 2) ^ (self.rng >> 3) ^ (self.rng >> 5)) & 1;
+        self.rng = (self.rng >> 1) | (bit << 15);
+        (self.rng & 0xff) as u8
+    }
+
+    /// Хост-доступ к тому же генератору. Программы читают его через 0xFF21.
+    pub fn random_byte(&mut self) -> u8 {
+        self.rng_next()
+    }
+
+    /// Пересчёт адреса через таблицу страниц. None -- страница не отображена,
+    /// это page fault. Таблицу и векторы прерываний не переводим, иначе зациклимся.
+    fn translate(&mut self, addr: u16) -> Option<u16> {
+        if !self.mmu || addr >= VTABLE {
+            return Some(addr);
+        }
+        // Саму таблицу страниц не переводим: иначе она переведёт себя раньше,
+        // чем мы её прочитаем, и начнётся философия.
+        if addr >= PAGE_TABLE && addr < VTABLE {
+            return Some(addr);
+        }
+        let vp = (addr >> 8) as usize;
+        let lo = self.ram[PAGE_TABLE as usize + vp * 2] as u16;
+        let hi = self.ram[PAGE_TABLE as usize + vp * 2 + 1] as u16;
+        let entry = lo | (hi << 8);
+        if entry & 0x8000 == 0 {
+            self.fault = true;
+            return None;
+        }
+        let page = (entry & 0x00ff) << 8;
+        Some(page | (addr & 0x00ff))
+    }
+
+    /// Чтение из RAM через кэш. Промах заполняет строку и дёргает таймер.
+    fn ram_read(&mut self, addr: u16) -> u8 {
+        let idx = ((addr >> 3) as usize) & 63;
+        let tag = addr >> 9;
+        if self.cache.valid[idx] && self.cache.tag[idx] == tag {
+            self.cache.hits += 1;
+            return self.cache.data[idx][(addr & 7) as usize];
+        }
+        self.cache.misses += 1;
+        let base = (addr as usize) & !7usize;
+        for i in 0..8 {
+            let a = (base + i).min(0xFEFF);
+            self.cache.data[idx][i] = self.ram[a];
+        }
+        self.cache.tag[idx] = tag;
+        self.cache.valid[idx] = true;
+        self.tick();
+        self.cache.data[idx][(addr & 7) as usize]
+    }
+
+    /// Запись в RAM. Строку кэша выбрасываем: она теперь врёт.
+    fn ram_write(&mut self, addr: u16, v: u8) {
+        self.ram[addr as usize] = v;
+        let idx = ((addr >> 3) as usize) & 63;
+        if self.cache.valid[idx] && self.cache.tag[idx] == (addr >> 9) {
+            self.cache.valid[idx] = false;
+        }
+    }
+
+    /// Забирает page fault. Как таймер, только больнее.
+    pub fn take_fault(&mut self) -> bool {
+        let f = self.fault;
+        self.fault = false;
+        f
+    }
+
+    pub fn cache_stats(&self) -> (u64, u64) {
+        (self.cache.hits, self.cache.misses)
     }
 
     /// Перестаёт болтать в терминал и записывает всё в блокнот.
@@ -402,6 +516,10 @@ impl Bus {
     /// Читает байт. Совсем-совсем ничего больше не делает. Честно.
     pub fn peek(&mut self, addr: u16) -> u8 {
         self.clock += 1;
+        let addr = match self.translate(addr) {
+            Some(a) => a,
+            None => return 0,
+        };
         if self.uart.busy > 0 {
             self.uart.busy -= 1;
         }
@@ -432,13 +550,34 @@ impl Bus {
         if addr == TIMER_CTL {
             return if self.timer.en { 1 } else { 0 };
         }
+        if addr == RNG {
+            return self.rng_next();
+        }
+        if addr == CACHE_HIT {
+            return self.cache.hits as u8;
+        }
+        if addr == CACHE_MISS {
+            return self.cache.misses as u8;
+        }
+        if addr == MMU_CTL {
+            return if self.mmu { 1 } else { 0 };
+        }
+        if addr == MMU_FAULT {
+            let f = self.fault;
+            self.fault = false;
+            return if f { 1 } else { 0 };
+        }
         if addr >= 0xFF00 {
             return 0;
         }
-        self.ram[addr as usize]
+        self.ram_read(addr)
     }
 
     pub fn poke(&mut self, addr: u16, v: u8) {
+        let addr = match self.translate(addr) {
+            Some(a) => a,
+            None => return,
+        };
         if addr == UART_TX {
             self.uart.tx(v);
             return;
@@ -478,10 +617,29 @@ impl Bus {
             self.timer.count = self.timer.reload;
             return;
         }
+        if addr == RNG {
+            // запись в регистр -- это семя. Ноль и единица не даём: такой LFSR
+            // либо стоит, либо вырождается в ноль, а нам нужен шум.
+            self.rng = if v < 2 { 0xACE1 } else { (v as u16) | 1 };
+            return;
+        }
+        if addr == MMU_CTL {
+            let on = v & 1 == 1;
+            if on != self.mmu {
+                self.mmu = on;
+                // после переключения весь кэш врёт: там физические адреса
+                self.cache.valid = [false; 64];
+            }
+            return;
+        }
+        if addr == MMU_FAULT {
+            self.fault = false;
+            return;
+        }
         if addr >= 0xFF00 {
             return;
         }
-        self.ram[addr as usize] = v;
+        self.ram_write(addr, v);
     }
 
     /// Кладёт образ в память. Или достаёт. Смотря как посмотреть.
@@ -489,10 +647,14 @@ impl Bus {
         for (i, b) in image.iter().enumerate() {
             self.ram[i] = *b;
         }
+        self.cache.valid = [false; 64];
+        self.fault = false;
     }
 
     /// Включает чипы памяти. Нажми кнопку и скажи спасибо.
     pub fn load(&mut self) {
         self.ram = vec![0u8; 0xFF00];
+        self.cache.valid = [false; 64];
+        self.fault = false;
     }
 }

@@ -35,6 +35,7 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../apps/guard.rs"));
     s.push_str(include_str!("../junk/mod.rs"));
     s.push_str(include_str!("../junk/bubble.rs"));
+    s.push_str(include_str!("../junk/prikol.rs"));
     s.push_str(include_str!("../junk/guard.rs"));
     s.push_str(include_str!("../data/mod.rs"));
     s.push_str(include_str!("../data/badapple.rs"));

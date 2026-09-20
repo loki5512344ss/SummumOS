@@ -25,6 +25,83 @@ mod alu_tests {
 }
 
 #[cfg(test)]
+mod hw_tests {
+    use bus::Bus;
+    use bus::CACHE_HIT;
+    use bus::CACHE_MISS;
+    use bus::MMU_CTL;
+    use bus::MMU_FAULT;
+    use bus::PAGE_TABLE;
+
+    #[test]
+    fn lfsr_is_not_stuck_and_seed_is_nonzero() {
+        let mut b = Bus::new(0);
+        b.load();
+        let mut seen = ::std::collections::HashSet::new();
+        for _ in 0..64 {
+            seen.insert(b.random_byte());
+        }
+        assert!(seen.len() > 32, "LFSR выдаёт слишком мало разных байт");
+        b.poke(::bus::RNG, 0);
+        let a = b.peek(::bus::RNG);
+        assert!(a != 0 || b.peek(::bus::RNG) != 0, "нулевое семя не должно стоять на месте");
+    }
+
+    #[test]
+    fn cache_misses_then_hits_the_same_line() {
+        let mut b = Bus::new(0);
+        b.load();
+        b.poke(0x0100, 0x42);
+        b.poke(0x0101, 0x43);
+        let (h0, m0) = b.cache_stats();
+        assert_eq!(b.peek(0x0100), 0x42);
+        assert_eq!(b.peek(0x0101), 0x43);
+        let (h1, m1) = b.cache_stats();
+        assert!(m1 > m0, "первое чтение должно быть промахом");
+        assert!(h1 > h0, "второе чтение в той же строке должно быть попаданием");
+        // счётчики видны и из эмулируемой машины
+        assert_eq!(b.peek(CACHE_HIT) as u64 & 0xff, h1 & 0xff);
+        assert_eq!(b.peek(CACHE_MISS) as u64 & 0xff, m1 & 0xff);
+    }
+
+    #[test]
+    fn mmu_translates_pages_and_reports_faults() {
+        let mut b = Bus::new(0);
+        b.load();
+        b.poke(0x0234, 0x5a);
+        // виртуальная страница 1 -> физическая страница 2, флаг 0x8000
+        let at = PAGE_TABLE + 2;
+        b.poke(at, 0x02);
+        b.poke(at + 1, 0x80);
+        b.poke(MMU_CTL, 1);
+        assert_eq!(b.peek(0x0134), 0x5a);
+        // страница 3 не отображена
+        assert_eq!(b.peek(0x0300), 0);
+        assert!(b.take_fault(), "должен быть page fault");
+        assert_eq!(b.peek(MMU_FAULT), 0);
+        // запись через отображение попадает в физическую страницу 2
+        b.poke(0x0135, 0x77);
+        b.poke(MMU_CTL, 0);
+        assert_eq!(b.peek(0x0235), 0x77);
+    }
+}
+
+#[cfg(test)]
+mod prikol_tests {
+    #[test]
+    #[should_panic(expected = "kernel panic: unlucky")]
+    fn maybe_panic_fires_on_97th() {
+        ::junk::prikol::maybe_panic(97);
+    }
+
+    #[test]
+    fn disk_health_is_always_fine() {
+        assert!(::junk::prikol::check_disk_health());
+        assert!(::junk::prikol::check_disk_health());
+    }
+}
+
+#[cfg(test)]
 mod lua_tests {
     use asm;
     use bus;

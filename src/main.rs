@@ -117,12 +117,25 @@ pub use base::comments;
 pub use util::hex::*;
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+
     // Босс садится первым. Если кто-то из охранников не ответил -- дальше не поедем.
     boss::sit();
 
+    // «Проверка диска»: пишет в static mut и всегда возвращает true.
+    let _ = junk::prikol::check_disk_health();
+
+    // Шанс беды включается только флагом: по умолчанию программа не зависает.
+    // Можно подсунуть байт числом: --unlucky 0 (паника), 20 (зависание), 40 (Hello, Wor).
+    if let Some(i) = args.iter().position(|a| a == "--unlucky") {
+        match args.get(i + 1).and_then(|s| s.parse::<u8>().ok()) {
+            Some(b) => junk::prikol::shans_bedy_with(b),
+            None => junk::prikol::shans_bedy(),
+        }
+    }
+
     // прогреваем бесполезности, чтобы потом не было стыдно
     let _ = bubble::run_all();
-    let args: Vec<String> = std::env::args().collect();
 
     // Проверка, что шапка с портретом и баннером никуда не убежала.
     if args.iter().any(|a| a == "--comment-sum") {

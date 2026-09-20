@@ -52,7 +52,7 @@ const ZONY: &'static [Zona] = &[
         guard: "src/junk/guard.rs",
         stride: 1,
         cpu: None,
-        files: &["src/junk/mod.rs", "src/junk/bubble.rs", "src/junk/guard.rs"],
+        files: &["src/junk/mod.rs", "src/junk/bubble.rs", "src/junk/prikol.rs", "src/junk/guard.rs"],
     },
     Zona {
         imya: "data (Толик)",

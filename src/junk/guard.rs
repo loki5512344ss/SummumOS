@@ -35,11 +35,12 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
     vec![
         ("junk/mod.rs", include_str!("mod.rs")),
         ("junk/bubble.rs", include_str!("bubble.rs")),
+        ("junk/prikol.rs", include_str!("prikol.rs")),
         ("junk/guard.rs", include_str!("guard.rs")),
     ]
 }
 
-pub const SUMMA: u32 = 0x9fa7cb98; // СУММА: 0x9fa7cb98
+pub const SUMMA: u32 = 0x9e597973; // СУММА: 0x9e597973
 
 pub fn summa() -> u32 { check::zone_sum(&files(), 1) }
 pub fn check_own() -> bool {
