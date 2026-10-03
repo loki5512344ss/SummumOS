@@ -1,14 +1,16 @@
 // ===========================================================================
-// term: свой терминал. Отдельное окно X11, своя сетка 100x30, свой шрифт 8x16,
+// term: свой терминал. Окно SDL2 (Wayland или X11), своя сетка 100x30, свой шрифт 8x16,
 // свои клавиши. Хост-терминал тут не участвует (чертёж №19).
 // Внутри живёт шелл и мини-плеер Bad Apple.
 // ===========================================================================
+pub mod audio;
 pub mod font;
 pub mod player;
-pub mod x11;
+pub mod sdl;
 
 use std::time::Instant;
-use self::x11::Key;
+use self::sdl::Event;
+use self::sdl::Key;
 
 pub const COLORS: [u32; 16] = [
     0x000000, 0xcc3333, 0x33cc33, 0xcccc33, 0x3333cc, 0xcc33cc, 0x33cccc, 0xcccccc,
@@ -45,6 +47,33 @@ impl Term {
         self.cx = 0;
         self.cy = 0;
         self.esc = false;
+    }
+
+    /// Меняет размер сетки, сохраняя то, что влезло. Остальное отрезается.
+    pub fn resize(&mut self, w: usize, h: usize) {
+        if w == self.w && h == self.h {
+            return;
+        }
+        let old = self.cells.clone();
+        let ow = self.w;
+        let oh = self.h;
+        let mut cells = vec![Cell { ch: b' ', fg: 7, bg: 0 }; w * h];
+        let nw = if w < ow { w } else { ow };
+        let nh = if h < oh { h } else { oh };
+        for y in 0..nh {
+            for x in 0..nw {
+                cells[y * w + x] = old[y * ow + x];
+            }
+        }
+        self.w = w;
+        self.h = h;
+        self.cells = cells;
+        if self.cx >= w {
+            self.cx = w - 1;
+        }
+        if self.cy >= h {
+            self.cy = h - 1;
+        }
     }
 
     pub fn put(&mut self, x: usize, y: usize, ch: u8, fg: u8, bg: u8) {
@@ -244,6 +273,21 @@ impl Shell {
         }
     }
 
+    fn resize(&mut self, term: &mut Term, w: usize, h: usize) {
+        term.resize(w, h);
+        match self.mode {
+            Mode::Player(ref mut p) => p.request_fit(w, h),
+            Mode::Shell => {
+                if term.cy >= h {
+                    term.cy = h - 1;
+                }
+                if term.cx >= w {
+                    term.cx = w - 1;
+                }
+            }
+        }
+    }
+
     fn run(&mut self, cmd: &str, term: &mut Term) -> bool {
         let mut it = cmd.split_whitespace();
         let head = it.next().unwrap_or("");
@@ -270,8 +314,8 @@ impl Shell {
             "play" => {
                 let path = it.next();
                 let p = match path {
-                    Some(p) => player::Player::from_file(p),
-                    None => player::Player::from_embedded(),
+                    Some(p) => player::Player::from_file(p, term.w, term.h),
+                    None => player::Player::from_badapple(term.w, term.h),
                 };
                 match p {
                     Ok(mut p) => {
@@ -316,12 +360,20 @@ fn run_hello() -> Result<Vec<u8>, String> {
 
 /// Запуск своего терминала. auto_play -- сразу открыть Bad Apple.
 pub fn run(auto_play: bool) -> Result<(), String> {
-    let mut win = x11::X11::open(100, 30)?;
-    let mut term = Term::new(100, 30);
+    let size = match std::env::var("SUMMUM_TERM") {
+        Ok(s) => s,
+        Err(_) => "100x30".to_string(),
+    };
+    let mut parts = size.split('x');
+    let cols = parts.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(100);
+    let rows = parts.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(30);
+    let mut win = sdl::Sdl::open(cols, rows)?;
+    let mut term = Term::new(win.cols, win.rows);
     let mut shell = Shell::new();
     shell.banner(&mut term);
+    term.put_str(2, 3, &format!("backend: {} (chosen by SDL)", win.driver()), 8, 0);
     if auto_play {
-        match player::Player::from_embedded() {
+        match player::Player::from_badapple(term.w, term.h) {
             Ok(mut p) => {
                 p.open_audio();
                 shell.mode = Mode::Player(p);
@@ -338,10 +390,16 @@ pub fn run(auto_play: bool) -> Result<(), String> {
         if win.closed {
             break;
         }
-        let keys = win.poll();
-        for k in keys {
-            if !shell.key(k, &mut term) {
-                return Ok(());
+        let events = win.poll();
+        for ev in events {
+            match ev {
+                Event::Close => return Ok(()),
+                Event::Resize(w, h) => shell.resize(&mut term, w, h),
+                Event::Key(k) => {
+                    if !shell.key(k, &mut term) {
+                        return Ok(());
+                    }
+                }
             }
         }
         let now = Instant::now();

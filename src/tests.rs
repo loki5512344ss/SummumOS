@@ -104,9 +104,11 @@ mod prikol_tests {
 #[cfg(test)]
 mod term_tests {
     use term;
+    use term::player::Action;
+    use term::player::Controls;
     use term::player::Player;
     use term::Term;
-    use term::x11::Key;
+    use term::sdl::Key;
 
     fn tiny_bav(frames: usize, fill: u8) -> Vec<u8> {
         let mut d: Vec<u8> = Vec::new();
@@ -140,6 +142,7 @@ mod term_tests {
         let mut p = p;
         p.tick(0.5);
         assert_eq!(p.frame, 7);
+        assert!(p.audio_pos_for_test() > 0, "аудиопозиция должна идти за кадрами");
         p.key(&Key::Char(b' '));
         p.tick(1.0);
         assert_eq!(p.frame, 7, "на паузе кадр не должен меняться");
@@ -163,6 +166,67 @@ mod term_tests {
         let mut px = vec![0u32; 20 * 8 * 5 * 16];
         term::render(&t, &mut px);
         assert!(px.iter().any(|p| *p != 0), "буквы должны стать пикселями");
+    }
+
+    #[test]
+    fn sdl_arrow_keycodes_are_not_swapped() {
+        assert_eq!(::term::sdl::key_from_sym(0x40000050), Key::Left);
+        assert_eq!(::term::sdl::key_from_sym(0x40000051), Key::Down);
+        assert_eq!(::term::sdl::key_from_sym(0x40000052), Key::Up);
+        assert_eq!(::term::sdl::key_from_sym(0x4000004F), Key::Right);
+    }
+
+    #[test]
+    fn controls_come_from_the_text_file() {
+        let c = Controls::from_text(include_str!("data/controls.txt"));
+        assert_eq!(c.action(&Key::Char(b' ')), Action::PlayPause);
+        assert_eq!(c.action(&Key::Left), Action::SeekBack);
+        assert_eq!(c.action(&Key::Right), Action::SeekForward);
+        assert_eq!(c.action(&Key::Up), Action::VolumeUp);
+        assert_eq!(c.action(&Key::Down), Action::VolumeDown);
+        assert_eq!(c.action(&Key::Char(b'[')), Action::SizeDown);
+        assert_eq!(c.action(&Key::Char(b']')), Action::SizeUp);
+        assert_eq!(c.action(&Key::Char(b'q')), Action::Quit);
+        assert_eq!(c.action(&Key::Char(b'a')), Action::AudioQuality);
+    }
+
+    #[test]
+    fn player_switches_version_on_resize() {
+        let mut p = Player::from_badapple(100, 30).ok().unwrap();
+        let was = p.version_for_test().unwrap();
+        p.request_fit(60, 26);
+        std::thread::sleep(std::time::Duration::from_millis(360));
+        p.tick(0.0);
+        let now = p.version_for_test().unwrap();
+        assert!(now != was, "версия должна смениться после ресайза");
+        assert!(::badapple::VERSIONS[now].w <= 60 && ::badapple::VERSIONS[now].h <= 21);
+    }
+
+    #[test]
+    fn audio_quality_levels_are_real_pcm() {
+        let q = ::data::audio::QUALITIES;
+        assert_eq!(q.len(), 5);
+        for i in 0..q.len() {
+            assert!(q[i].rate > 0);
+            if i > 0 {
+                assert!(q[i].rate > q[i - 1].rate);
+            }
+            let expect = q[i].rate as usize * 300;
+            assert!(q[i].data.len() > expect, "аудио {} короче 5 минут", q[i].name);
+        }
+        assert_eq!(::data::audio::default_quality(), q.len() - 1);
+    }
+
+    #[test]
+    fn badapple_versions_fit_and_decode() {
+        let idx = ::badapple::best_for(100, 25);
+        let v = &::badapple::VERSIONS[idx];
+        assert!(v.w <= 100 && v.h <= 25);
+        let data = ::badapple::decode(v.data);
+        assert_eq!(&data[0..4], b"BAV2");
+        assert_eq!(data[4] as usize, v.w);
+        assert_eq!(data[5] as usize, v.h);
+        assert_eq!(data[8] as usize | ((data[9] as usize) << 8), v.frames);
     }
 
     #[test]

@@ -135,11 +135,11 @@ fn main() {
     }
 
     // Свой терминал: отдельное окно X11, свой шрифт и сетка. Без флагов --
-    // именно он, если есть DISPLAY. --term включает принудительно, --plain
+    // именно он, если есть DISPLAY или WAYLAND_DISPLAY. --term включает принудительно, --plain
     // возвращает старое поведение (Hello, World! в этом терминале).
     let wants_term = args.iter().any(|a| a == "--term")
         || (args.len() == 1
-            && std::env::var("DISPLAY").is_ok()
+            && (std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok())
             && std::env::var("SUMMUM_PLAIN").is_err());
     if wants_term {
         let auto = args.iter().any(|a| a == "--badapple") || args.iter().any(|a| a == "play");
@@ -291,13 +291,15 @@ fn main() {
         bus.open_audio();
         let disk: Vec<u8> = match args.get(i + 1) {
             Some(p) if !p.starts_with("--") => read_file(p),
-            _ => match pack::pack(badapple::ASC, &hex_decode(badapple::SND_HEX)) {
-                Ok(d) => d,
-                Err(e) => {
-                    writeln!(std::io::stderr(), "вшитое видео сломалось: {}", e).unwrap();
-                    std::process::exit(1);
+            _ => {
+                let mut at = 0;
+                for (k, v) in badapple::VERSIONS.iter().enumerate() {
+                    if v.w == 64 && v.h == 24 {
+                        at = k;
+                    }
                 }
-            },
+                badapple::decode(badapple::VERSIONS[at].data)
+            }
         };
         bus.attach_disk(disk);
     }

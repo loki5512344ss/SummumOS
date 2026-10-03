@@ -26,6 +26,14 @@ name = "mkfont"
 path = "tools/mkfont.rs"
 
 [[bin]]
+name = "mkaudio_raw"
+path = "tools/mkaudio_raw.rs"
+
+[[bin]]
+name = "mkbadapple"
+path = "tools/mkbadapple.rs"
+
+[[bin]]
 name = "seal"
 path = "tools/seal.rs"
 

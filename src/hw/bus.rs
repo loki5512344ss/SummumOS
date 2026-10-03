@@ -313,6 +313,7 @@ impl Bus {
                     "pw-cat",
                     vec![
                         "--playback",
+                        "--raw",
                         "--format",
                         "u8",
                         "--rate",

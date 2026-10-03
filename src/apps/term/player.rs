@@ -1,42 +1,217 @@
 // ===========================================================================
 // player: мини-плеер Bad Apple для своего терминала. Формат BAV2 читается
-// на хосте: RLE и 10 байт звука на кадр. Кнопки: стоп, плей, перемотка,
-// громкость и прогресс-бар (чертёж №10, только без ANSI и без stty).
-// Звук свой: 10 байт на кадр идут в PSG, как в старом --play.
+// на хосте, версия выбирается по размеру окна (10 размеров в data/badapple.rs).
+// Кнопки берутся из data/controls.txt, а не из кода.
+// Звук: настоящий PCM из видео в пяти качествах (data/audio.rs).
 // ===========================================================================
 use super::Term;
-use super::x11::Key;
-use ::bus::Bus;
+use super::sdl::Key;
+use super::audio::AudioOut;
+use std::time::Instant;
+
+const CONTROLS_TXT: &'static str = include_str!("../../data/controls.txt");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    PlayPause,
+    SeekBack,
+    SeekForward,
+    VolumeUp,
+    VolumeDown,
+    Mute,
+    Stop,
+    Restart,
+    SizeUp,
+    SizeDown,
+    AudioQuality,
+    Quit,
+    Unknown,
+}
+
+pub struct Controls {
+    binds: Vec<(Key, Action)>,
+}
+
+impl Controls {
+    pub fn from_text(text: &str) -> Controls {
+        let mut binds = Vec::new();
+        for line in text.lines() {
+            let t = line.trim();
+            if t.len() == 0 || t.starts_with("#") {
+                continue;
+            }
+            let f: Vec<&str> = t.split_whitespace().collect();
+            if f.len() < 2 {
+                continue;
+            }
+            let k = match f[0] {
+                "space" => Key::Char(b' '),
+                "left" => Key::Left,
+                "right" => Key::Right,
+                "up" => Key::Up,
+                "down" => Key::Down,
+                "home" => Key::Home,
+                "end" => Key::End,
+                "enter" => Key::Enter,
+                "backspace" => Key::Backspace,
+                "escape" => Key::Escape,
+                other => {
+                    let b = other.as_bytes();
+                    if b.len() == 1 {
+                        Key::Char(b[0])
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            let a = match f[1] {
+                "play_pause" => Action::PlayPause,
+                "seek_back" => Action::SeekBack,
+                "seek_forward" => Action::SeekForward,
+                "volume_up" => Action::VolumeUp,
+                "volume_down" => Action::VolumeDown,
+                "mute" => Action::Mute,
+                "stop" => Action::Stop,
+                "restart" => Action::Restart,
+                "size_up" => Action::SizeUp,
+                "size_down" => Action::SizeDown,
+                "audio_quality" => Action::AudioQuality,
+                "quit" => Action::Quit,
+                _ => Action::Unknown,
+            };
+            binds.push((k, a));
+        }
+        Controls { binds: binds }
+    }
+
+    pub fn action(&self, k: &Key) -> Action {
+        for &(ref key, ref a) in self.binds.iter() {
+            if key == k {
+                return *a;
+            }
+        }
+        Action::Unknown
+    }
+
+    fn key_name(k: &Key) -> &'static str {
+        match *k {
+            Key::Char(b' ') => "SPACE",
+            Key::Char(b'[') => "[",
+            Key::Char(b']') => "]",
+            Key::Char(b) => {
+                match b {
+                    b'a' => "A", b'b' => "B", b'c' => "C", b'd' => "D", b'e' => "E",
+                    b'f' => "F", b'g' => "G", b'h' => "H", b'i' => "I", b'j' => "J",
+                    b'k' => "K", b'l' => "L", b'm' => "M", b'n' => "N", b'o' => "O",
+                    b'p' => "P", b'q' => "Q", b'r' => "R", b's' => "S", b't' => "T",
+                    b'u' => "U", b'v' => "V", b'w' => "W", b'x' => "X", b'y' => "Y",
+                    b'z' => "Z", _ => "?",
+                }
+            }
+            Key::Left => "LEFT",
+            Key::Right => "RIGHT",
+            Key::Up => "UP",
+            Key::Down => "DOWN",
+            Key::Home => "HOME",
+            Key::End => "END",
+            Key::Enter => "ENTER",
+            Key::Backspace => "BACKSPACE",
+            Key::Escape => "ESC",
+            Key::Other => "?",
+        }
+    }
+
+    fn action_name(a: Action) -> &'static str {
+        match a {
+            Action::PlayPause => "play/pause",
+            Action::SeekBack => "seek -10s",
+            Action::SeekForward => "seek +10s",
+            Action::VolumeUp => "volume +",
+            Action::VolumeDown => "volume -",
+            Action::Mute => "mute",
+            Action::Stop => "stop",
+            Action::Restart => "restart",
+            Action::SizeUp => "size +",
+            Action::SizeDown => "size -",
+            Action::AudioQuality => "audio quality",
+            Action::Quit => "quit",
+            Action::Unknown => "",
+        }
+    }
+
+    /// Строки подсказки из самого файла управления. Переносим по ширине.
+    pub fn hint(&self, width: usize) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut cur = String::new();
+        for &(ref k, ref a) in self.binds.iter() {
+            if *a == Action::Unknown {
+                continue;
+            }
+            let piece = format!("{} {}", Controls::key_name(k), Controls::action_name(*a));
+            if cur.len() + piece.len() + 2 > width {
+                lines.push(cur.trim().to_string());
+                cur = String::new();
+            }
+            cur.push_str(&piece);
+            cur.push_str("   ");
+        }
+        if cur.trim().len() > 0 {
+            lines.push(cur.trim().to_string());
+        }
+        lines
+    }
+}
 
 pub struct Player {
     frames: Vec<Vec<u8>>,
-    sounds: Vec<[u8; 10]>,
     fps: usize,
+    w: usize,
+    h: usize,
     pub frame: usize,
     playing: bool,
     acc: f64,
     name: String,
-    audio: Option<Bus>,
+    audio: Option<AudioOut>,
+    audio_pos: u64,
+    quality: usize,
     volume: u8,
     muted: bool,
+    controls: Controls,
+    version: Option<usize>,
+    view_w: usize,
+    view_h: usize,
+    pending_fit: Option<(usize, usize)>,
+    pending_at: Option<Instant>,
 }
 
-const VW: usize = 64;
-const VH: usize = 24;
-
 impl Player {
-    pub fn from_embedded() -> Result<Player, String> {
-        let snd = ::hex_decode(::badapple::SND_HEX);
-        let data = try!(::pack::pack(::badapple::ASC, &snd));
-        Player::from_bav(&data, "Bad Apple!! (embedded)".to_string())
+    /// Встроенный Bad Apple: выбираем версию по размеру сетки.
+    pub fn from_badapple(view_w: usize, view_h: usize) -> Result<Player, String> {
+        let idx = ::badapple::best_for(view_w, view_h.saturating_sub(5));
+        Player::from_version(idx, view_w, view_h)
     }
 
-    pub fn from_file(path: &str) -> Result<Player, String> {
+    fn from_version(idx: usize, view_w: usize, view_h: usize) -> Result<Player, String> {
+        let v = &::badapple::VERSIONS[idx];
+        let data = ::badapple::decode(v.data);
+        let mut p = try!(Player::from_bav(&data, format!("Bad Apple {}x{} (embedded)", v.w, v.h)));
+        p.version = Some(idx);
+        p.w = v.w;
+        p.h = v.h;
+        p.view_w = view_w;
+        p.view_h = view_h;
+        Ok(p)
+    }
+
+    pub fn from_file(path: &str, view_w: usize, view_h: usize) -> Result<Player, String> {
         let data = match std::fs::read(path) {
             Ok(v) => v,
             Err(e) => return Err(format!("{}: {}", path, e)),
         };
-        Player::from_bav(&data, path.to_string())
+        let mut p = try!(Player::from_bav(&data, path.to_string()));
+        p.view_w = view_w;
+        p.view_h = view_h;
+        Ok(p)
     }
 
     pub fn from_bav(data: &[u8], name: String) -> Result<Player, String> {
@@ -47,12 +222,8 @@ impl Player {
         let h = data[5] as usize;
         let fps = data[6] as usize;
         let n = data[8] as usize | ((data[9] as usize) << 8);
-        if w != VW || h != VH {
-            return Err(format!("frame {}x{}, terminal wants {}x{}", w, h, VW, VH));
-        }
         let mut pos = 10;
         let mut frames: Vec<Vec<u8>> = Vec::with_capacity(n);
-        let mut sounds: Vec<[u8; 10]> = Vec::with_capacity(n);
         for _ in 0..n {
             let mut cells: Vec<u8> = Vec::with_capacity(w * h);
             while cells.len() < w * h {
@@ -74,76 +245,166 @@ impl Player {
             if pos + 10 > data.len() {
                 return Err("frame has no sound bytes".to_string());
             }
-            let mut snd = [0u8; 10];
-            for k in 0..10 {
-                snd[k] = data[pos + k];
-            }
             pos += 10;
             frames.push(cells);
-            sounds.push(snd);
         }
         if frames.is_empty() {
             return Err("no frames".to_string());
         }
         Ok(Player {
             frames: frames,
-            sounds: sounds,
             fps: if fps == 0 { 15 } else { fps },
+            w: w,
+            h: h,
             frame: 0,
             playing: true,
             acc: 0.0,
             name: name,
             audio: None,
+            audio_pos: 0,
+            quality: ::data::audio::default_quality(),
             volume: 8,
             muted: false,
+            controls: Controls::from_text(CONTROLS_TXT),
+            version: None,
+            view_w: w,
+            view_h: h + 5,
+            pending_fit: None,
+            pending_at: None,
         })
     }
 
-    /// Включает звук: тот же PSG, что и в --play, только кадры гонит плеер.
+    /// Включает звук из видео в текущем качестве.
     pub fn open_audio(&mut self) {
-        let mut b = Bus::new(0);
-        b.set_fps(self.fps as u64);
-        b.open_audio();
-        self.audio = Some(b);
+        let rate = ::data::audio::QUALITIES[self.quality].rate;
+        self.audio = Some(AudioOut::open(rate));
+        self.reset_audio_pos();
     }
 
-    fn total(&self) -> usize {
+    pub fn total(&self) -> usize {
         self.frames.len()
     }
 
-    /// Для тестов: сколько кадров распаковалось.
     pub fn total_for_test(&self) -> usize {
         self.frames.len()
     }
 
-    fn play_sound(&mut self) {
-        let snd = self.sounds[self.frame];
-        let vol = if self.muted { 0 } else { self.volume };
-        let fps = self.fps as u64;
-        if let Some(ref mut b) = self.audio {
-            b.audio_frame(&snd, fps, vol);
+    pub fn version_for_test(&self) -> Option<usize> {
+        self.version
+    }
+
+    pub fn audio_pos_for_test(&self) -> u64 {
+        self.audio_pos
+    }
+
+    /// Просит подобрать размер после изменения окна (с задержкой, чтобы не
+    /// перекодировать видео на каждый пиксель при перетаскивании).
+    pub fn request_fit(&mut self, view_w: usize, view_h: usize) {
+        self.view_w = view_w;
+        self.view_h = view_h;
+        self.pending_fit = Some((view_w, view_h));
+        self.pending_at = Some(Instant::now());
+    }
+
+    fn fit_now(&mut self, view_w: usize, view_h: usize) {
+        let idx = ::badapple::best_for(view_w, view_h.saturating_sub(5));
+        if self.version == Some(idx) {
+            return;
+        }
+        if let Ok(mut p) = Player::from_version(idx, view_w, view_h) {
+            p.frame = if self.frame < p.total() { self.frame } else { p.total() - 1 };
+            p.playing = self.playing;
+            p.volume = self.volume;
+            p.muted = self.muted;
+            p.audio = self.audio.take();
+            p.audio_pos = self.audio_pos;
+            p.quality = self.quality;
+            *self = p;
         }
     }
 
-    pub fn tick(&mut self, dt: f64) {
-        if !self.playing {
+    fn change_quality(&mut self) {
+        self.quality = (self.quality + 1) % ::data::audio::QUALITIES.len();
+        let rate = ::data::audio::QUALITIES[self.quality].rate;
+        self.audio = Some(AudioOut::open(rate));
+        self.reset_audio_pos();
+    }
+
+    fn reset_audio_pos(&mut self) {
+        let rate = ::data::audio::QUALITIES[self.quality].rate as u64;
+        self.audio_pos = (self.frame as u64 * rate) / self.fps as u64;
+    }
+
+    fn sync_audio(&mut self) {
+        let rate = ::data::audio::QUALITIES[self.quality].rate as u64;
+        let target = (self.frame as u64 * rate) / self.fps as u64;
+        if !self.playing || self.frame + 1 >= self.total() {
+            self.audio_pos = target;
             return;
         }
-        let before = self.frame;
-        self.acc += dt;
-        let step = 1.0 / self.fps as f64;
-        while self.acc >= step {
-            self.acc -= step;
-            if self.frame + 1 < self.total() {
-                self.frame += 1;
-            } else {
-                self.playing = false;
-                break;
+        if target < self.audio_pos {
+            self.audio_pos = target;
+        }
+        if target == self.audio_pos {
+            return;
+        }
+        let limit = rate / 4;
+        let end = if target - self.audio_pos > limit { self.audio_pos + limit } else { target };
+        let vol = if self.muted { 0 } else { self.volume };
+        let data = ::data::audio::QUALITIES[self.quality].data;
+        let s = self.audio_pos as usize;
+        let e = (end as usize).min(data.len());
+        if let Some(ref mut a) = self.audio {
+            if s < e {
+                if vol == 0 {
+                    let silence = vec![128u8; e - s];
+                    a.write(&silence);
+                } else if vol < 10 {
+                    let mut buf: Vec<u8> = Vec::with_capacity(e - s);
+                    for &x in data[s..e].iter() {
+                        let v = x as i32 - 128;
+                        let y = 128 + v * vol as i32 / 10;
+                        buf.push(if y < 0 { 0 } else if y > 255 { 255 } else { y as u8 });
+                    }
+                    a.write(&buf);
+                } else {
+                    a.write(&data[s..e]);
+                }
             }
         }
-        if self.frame != before {
-            self.play_sound();
+        self.audio_pos = end;
+    }
+
+    pub fn tick(&mut self, dt: f64) {
+        let mut do_fit = false;
+        if let Some((w, h)) = self.pending_fit {
+            if let Some(t) = self.pending_at {
+                if t.elapsed().as_millis() >= 300 {
+                    self.pending_fit = None;
+                    self.pending_at = None;
+                    do_fit = true;
+                    let _ = (w, h);
+                }
+            }
         }
+        if do_fit {
+            let (w, h) = (self.view_w, self.view_h);
+            self.fit_now(w, h);
+        }
+        if self.playing {
+            self.acc += dt;
+            let step = 1.0 / self.fps as f64;
+            while self.acc >= step {
+                self.acc -= step;
+                if self.frame + 1 < self.total() {
+                    self.frame += 1;
+                } else {
+                    self.playing = false;
+                    break;
+                }
+            }
+        }
+        self.sync_audio();
     }
 
     fn seek(&mut self, d: i64) {
@@ -151,6 +412,41 @@ impl Player {
         let n = self.total() as i64;
         self.frame = if f < 0 { 0 } else if f >= n { (n - 1) as usize } else { f as usize };
         self.acc = 0.0;
+        self.reset_audio_pos();
+    }
+
+    fn change_size(&mut self, up: bool) {
+        let idx = match self.version {
+            Some(i) => i,
+            None => return,
+        };
+        let max = ::badapple::VERSIONS.len() - 1;
+        let mut best = idx;
+        if up {
+            let mut i = idx + 1;
+            while i <= max {
+                let v = &::badapple::VERSIONS[i];
+                if v.w <= self.view_w && v.h <= self.view_h.saturating_sub(5) {
+                    best = i;
+                    break;
+                }
+                i += 1;
+            }
+        } else if idx > 0 {
+            best = idx - 1;
+        }
+        if best != idx {
+            if let Ok(mut p) = Player::from_version(best, self.view_w, self.view_h) {
+                p.frame = if self.frame < p.total() { self.frame } else { p.total() - 1 };
+                p.playing = self.playing;
+                p.volume = self.volume;
+                p.muted = self.muted;
+                p.audio = self.audio.take();
+                p.audio_pos = self.audio_pos;
+                p.quality = self.quality;
+                *self = p;
+            }
+        }
     }
 
     pub fn draw(&self, term: &mut Term) {
@@ -159,13 +455,13 @@ impl Player {
             c.fg = 7;
             c.bg = 0;
         }
-        let x0 = (term.w - VW) / 2;
-        let y0 = 0;
+        let x0 = (term.w - self.w) / 2;
+        let avail = term.h.saturating_sub(5);
+        let y0 = if avail > self.h { (avail - self.h) / 2 } else { 0 };
         let cells = &self.frames[self.frame];
-        for y in 0..VH {
-            for x in 0..VW {
-                let ch = cells[y * VW + x];
-                // Градации Bad Apple: ' .:-=+*#%@'
+        for y in 0..self.h {
+            for x in 0..self.w {
+                let ch = cells[y * self.w + x];
                 let fg = match ch {
                     b' ' => 8,
                     b'.' | b':' => 8,
@@ -174,12 +470,9 @@ impl Player {
                     b'#' => 15,
                     _ => 15,
                 };
-                term.put(x0 + x, y0 + y, ch, fg, 0);
-            }
-        }
-        for c in term.cells.iter_mut() {
-            if c.ch == 0 {
-                c.ch = b' ';
+                if x0 + x < term.w && y0 + y < term.h {
+                    term.put(x0 + x, y0 + y, ch, fg, 0);
+                }
             }
         }
         let n = self.total();
@@ -194,49 +487,54 @@ impl Player {
         } else {
             "PAUSE"
         };
-        let vol = if self.muted { "MUTE".to_string() } else { format!("vol {}%", self.volume as usize * 10) };
-        let head = format!("{}  {}  {:02}:{:02} / {:02}:{:02}  frame {}/{}  {}", state, self.name, sec / 60, sec % 60, all / 60, all % 60, self.frame + 1, n, vol);
-        term.put_str(1, 25, &head, 15, 0);
+        let snd = ::data::audio::QUALITIES[self.quality].name;
+        let vol = if self.muted { format!("{} MUTE", snd) } else { format!("{} vol {}%", snd, self.volume as usize * 10) };
+        let base = term.h - 5;
+        let head = format!("{}  {}  {:02}:{:02} / {:02}:{:02}  frame {}/{}  {}x{}  {}", state, self.name, sec / 60, sec % 60, all / 60, all % 60, self.frame + 1, n, self.w, self.h, vol);
+        term.put_str(1, base, &head, 15, 0);
 
         let width = term.w - 12;
         let done = if n > 1 { (self.frame * width) / (n - 1) } else { 0 };
-        term.put_str(1, 26, "[", 7, 0);
+        term.put_str(1, base + 1, "[", 7, 0);
         for i in 0..width {
             let ch = if i < done { b'=' } else { b'-' };
-            term.put(2 + i, 26, ch, if i < done { 10 } else { 8 }, 0);
+            term.put(2 + i, base + 1, ch, if i < done { 10 } else { 8 }, 0);
         }
-        term.put(1 + width + 1, 26, b']', 7, 0);
+        term.put(1 + width + 1, base + 1, b']', 7, 0);
         let pct = if n > 1 { (self.frame * 100) / (n - 1) } else { 0 };
-        term.put_str(3 + width, 26, &format!(" {}%", pct), 11, 0);
+        term.put_str(3 + width, base + 1, &format!(" {}%", pct), 11, 0);
 
-        term.put_str(1, 27, "SPACE play/pause  LEFT/RIGHT seek 10s  UP/DOWN volume  S stop  M mute  HOME  Q quit", 7, 0);
-        term.put_str(1, 28, "Bad Apple on the ASCII video card 64x24, sound from the NAND PSG", 8, 0);
-        term.put_str(1, 29, "custom chiptune: 3 square voices + noise, 10 bytes per frame", 8, 0);
+        let hint = self.controls.hint(term.w - 2);
+        for (i, line) in hint.iter().take(2).enumerate() {
+            term.put_str(1, base + 2 + i, line, 7, 0);
+        }
+        term.put_str(1, base + 4, "controls from data/controls.txt", 8, 0);
     }
 
     /// true -- остаться в плеере, false -- выйти в шелл.
     pub fn key(&mut self, k: &Key) -> bool {
-        match *k {
-            Key::Char(b' ') => {
+        match self.controls.action(k) {
+            Action::PlayPause => {
                 if self.frame + 1 >= self.total() {
                     self.frame = 0;
                     self.acc = 0.0;
                 }
                 self.playing = !self.playing;
             }
-            Key::Char(b's') | Key::Char(b'S') => {
+            Action::Stop => {
                 self.frame = 0;
                 self.acc = 0.0;
                 self.playing = false;
+                self.reset_audio_pos();
             }
-            Key::Char(b'm') | Key::Char(b'M') => self.muted = !self.muted,
-            Key::Up => {
+            Action::Mute => self.muted = !self.muted,
+            Action::VolumeUp => {
                 if self.volume < 10 {
                     self.volume += 1;
                 }
                 self.muted = false;
             }
-            Key::Down => {
+            Action::VolumeDown => {
                 if self.volume > 0 {
                     self.volume -= 1;
                 }
@@ -244,14 +542,18 @@ impl Player {
                     self.muted = true;
                 }
             }
-            Key::Char(b'q') | Key::Char(b'Q') | Key::Escape => return false,
-            Key::Left => self.seek(-(self.fps as i64) * 10),
-            Key::Right => self.seek(self.fps as i64 * 10),
-            Key::Home => {
+            Action::Quit => return false,
+            Action::SeekBack => self.seek(-(self.fps as i64) * 10),
+            Action::SeekForward => self.seek(self.fps as i64 * 10),
+            Action::Restart => {
                 self.frame = 0;
                 self.acc = 0.0;
+                self.reset_audio_pos();
             }
-            _ => {}
+            Action::SizeUp => self.change_size(true),
+            Action::SizeDown => self.change_size(false),
+            Action::AudioQuality => self.change_quality(),
+            Action::Unknown => {}
         }
         true
     }
