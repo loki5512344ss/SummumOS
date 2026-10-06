@@ -24,6 +24,7 @@ pub enum Action {
     SizeUp,
     SizeDown,
     AudioQuality,
+    Track,
     Quit,
     Unknown,
 }
@@ -76,6 +77,7 @@ impl Controls {
                 "size_up" => Action::SizeUp,
                 "size_down" => Action::SizeDown,
                 "audio_quality" => Action::AudioQuality,
+                "track" => Action::Track,
                 "quit" => Action::Quit,
                 _ => Action::Unknown,
             };
@@ -134,6 +136,7 @@ impl Controls {
             Action::SizeUp => "size +",
             Action::SizeDown => "size -",
             Action::AudioQuality => "audio quality",
+            Action::Track => "switch track",
             Action::Quit => "quit",
             Action::Unknown => "",
         }
@@ -171,8 +174,12 @@ pub struct Player {
     playing: bool,
     acc: f64,
     name: String,
+    track: usize,
+    versions: &'static [::data::video::Version],
+    qualities: &'static [::data::audio::Quality],
     audio: Option<AudioOut>,
     audio_pos: u64,
+    pcm: Vec<u8>,
     quality: usize,
     volume: u8,
     muted: bool,
@@ -185,21 +192,41 @@ pub struct Player {
 }
 
 impl Player {
-    /// Встроенный Bad Apple: выбираем версию по размеру сетки.
-    pub fn from_badapple(view_w: usize, view_h: usize) -> Result<Player, String> {
-        let idx = ::badapple::best_for(view_w, view_h.saturating_sub(5));
-        Player::from_version(idx, view_w, view_h)
+    fn track_parts(track: usize) -> (&'static [::data::video::Version], &'static [::data::audio::Quality]) {
+        if track == 1 {
+            (::rickroll::VERSIONS, ::rickroll_audio::QUALITIES)
+        } else {
+            (::badapple::VERSIONS, ::data::audio::QUALITIES)
+        }
     }
 
-    fn from_version(idx: usize, view_w: usize, view_h: usize) -> Result<Player, String> {
-        let v = &::badapple::VERSIONS[idx];
-        let data = ::badapple::decode(v.data);
-        let mut p = try!(Player::from_bav(&data, format!("Bad Apple {}x{} (embedded)", v.w, v.h)));
+    /// Встроенный Bad Apple: выбираем версию по размеру сетки.
+    pub fn from_badapple(view_w: usize, view_h: usize) -> Result<Player, String> {
+        Player::from_track(0, view_w, view_h)
+    }
+
+    /// track 0 -- Bad Apple, 1 -- Rickroll.
+    pub fn from_track(track: usize, view_w: usize, view_h: usize) -> Result<Player, String> {
+        let (versions, _) = Player::track_parts(track);
+        let idx = ::data::video::best_for(versions, view_w, view_h.saturating_sub(5));
+        Player::from_version(track, idx, view_w, view_h)
+    }
+
+    fn from_version(track: usize, idx: usize, view_w: usize, view_h: usize) -> Result<Player, String> {
+        let (versions, quals) = Player::track_parts(track);
+        let v = &versions[idx];
+        let data = if track == 1 { ::rickroll::decode(v.data) } else { ::badapple::decode(v.data) };
+        let title = if track == 1 { ::rickroll::NAME } else { ::badapple::NAME };
+        let mut p = try!(Player::from_bav(&data, format!("{} {}x{} (embedded)", title, v.w, v.h)));
+        p.track = track;
+        p.versions = versions;
+        p.qualities = quals;
         p.version = Some(idx);
         p.w = v.w;
         p.h = v.h;
         p.view_w = view_w;
         p.view_h = view_h;
+        p.quality = if track == 1 { ::rickroll_audio::default_quality() } else { ::data::audio::default_quality() };
         Ok(p)
     }
 
@@ -260,8 +287,12 @@ impl Player {
             playing: true,
             acc: 0.0,
             name: name,
+            track: 2,
+            versions: &[],
+            qualities: ::data::audio::QUALITIES,
             audio: None,
             audio_pos: 0,
+            pcm: Vec::new(),
             quality: ::data::audio::default_quality(),
             volume: 8,
             muted: false,
@@ -276,7 +307,8 @@ impl Player {
 
     /// Включает звук из видео в текущем качестве.
     pub fn open_audio(&mut self) {
-        let rate = ::data::audio::QUALITIES[self.quality].rate;
+        self.pcm = ::data::audio::decode(&self.qualities[self.quality]);
+        let rate = self.qualities[self.quality].rate;
         self.audio = Some(AudioOut::open(rate));
         self.reset_audio_pos();
     }
@@ -307,36 +339,55 @@ impl Player {
     }
 
     fn fit_now(&mut self, view_w: usize, view_h: usize) {
-        let idx = ::badapple::best_for(view_w, view_h.saturating_sub(5));
+        let idx = ::data::video::best_for(self.versions, view_w, view_h.saturating_sub(5));
         if self.version == Some(idx) {
             return;
         }
-        if let Ok(mut p) = Player::from_version(idx, view_w, view_h) {
+        if let Ok(mut p) = Player::from_version(self.track, idx, view_w, view_h) {
             p.frame = if self.frame < p.total() { self.frame } else { p.total() - 1 };
             p.playing = self.playing;
             p.volume = self.volume;
             p.muted = self.muted;
             p.audio = self.audio.take();
             p.audio_pos = self.audio_pos;
+            p.pcm = std::mem::take(&mut self.pcm);
             p.quality = self.quality;
             *self = p;
         }
     }
 
     fn change_quality(&mut self) {
-        self.quality = (self.quality + 1) % ::data::audio::QUALITIES.len();
-        let rate = ::data::audio::QUALITIES[self.quality].rate;
+        self.quality = (self.quality + 1) % self.qualities.len();
+        self.pcm = ::data::audio::decode(&self.qualities[self.quality]);
+        let rate = self.qualities[self.quality].rate;
         self.audio = Some(AudioOut::open(rate));
         self.reset_audio_pos();
     }
 
+    fn switch_track(&mut self) {
+        if self.track > 1 {
+            return;
+        }
+        let new = 1 - self.track;
+        let (versions, _) = Player::track_parts(new);
+        let idx = ::data::video::best_for(versions, self.view_w, self.view_h.saturating_sub(5));
+        if let Ok(mut p) = Player::from_version(new, idx, self.view_w, self.view_h) {
+            p.frame = if self.frame < p.total() { self.frame } else { p.total() - 1 };
+            p.playing = self.playing;
+            p.volume = self.volume;
+            p.muted = self.muted;
+            *self = p;
+            self.open_audio();
+        }
+    }
+
     fn reset_audio_pos(&mut self) {
-        let rate = ::data::audio::QUALITIES[self.quality].rate as u64;
+        let rate = self.qualities[self.quality].rate as u64;
         self.audio_pos = (self.frame as u64 * rate) / self.fps as u64;
     }
 
     fn sync_audio(&mut self) {
-        let rate = ::data::audio::QUALITIES[self.quality].rate as u64;
+        let rate = self.qualities[self.quality].rate as u64;
         let target = (self.frame as u64 * rate) / self.fps as u64;
         if !self.playing || self.frame + 1 >= self.total() {
             self.audio_pos = target;
@@ -351,9 +402,8 @@ impl Player {
         let limit = rate / 4;
         let end = if target - self.audio_pos > limit { self.audio_pos + limit } else { target };
         let vol = if self.muted { 0 } else { self.volume };
-        let data = ::data::audio::QUALITIES[self.quality].data;
         let s = self.audio_pos as usize;
-        let e = (end as usize).min(data.len());
+        let e = (end as usize).min(self.pcm.len());
         if let Some(ref mut a) = self.audio {
             if s < e {
                 if vol == 0 {
@@ -361,14 +411,14 @@ impl Player {
                     a.write(&silence);
                 } else if vol < 10 {
                     let mut buf: Vec<u8> = Vec::with_capacity(e - s);
-                    for &x in data[s..e].iter() {
+                    for &x in self.pcm[s..e].iter() {
                         let v = x as i32 - 128;
                         let y = 128 + v * vol as i32 / 10;
                         buf.push(if y < 0 { 0 } else if y > 255 { 255 } else { y as u8 });
                     }
                     a.write(&buf);
                 } else {
-                    a.write(&data[s..e]);
+                    a.write(&self.pcm[s..e]);
                 }
             }
         }
@@ -420,12 +470,12 @@ impl Player {
             Some(i) => i,
             None => return,
         };
-        let max = ::badapple::VERSIONS.len() - 1;
+        let max = self.versions.len() - 1;
         let mut best = idx;
         if up {
             let mut i = idx + 1;
             while i <= max {
-                let v = &::badapple::VERSIONS[i];
+                let v = &self.versions[i];
                 if v.w <= self.view_w && v.h <= self.view_h.saturating_sub(5) {
                     best = i;
                     break;
@@ -436,13 +486,14 @@ impl Player {
             best = idx - 1;
         }
         if best != idx {
-            if let Ok(mut p) = Player::from_version(best, self.view_w, self.view_h) {
+            if let Ok(mut p) = Player::from_version(self.track, best, self.view_w, self.view_h) {
                 p.frame = if self.frame < p.total() { self.frame } else { p.total() - 1 };
                 p.playing = self.playing;
                 p.volume = self.volume;
                 p.muted = self.muted;
                 p.audio = self.audio.take();
                 p.audio_pos = self.audio_pos;
+                p.pcm = std::mem::take(&mut self.pcm);
                 p.quality = self.quality;
                 *self = p;
             }
@@ -487,7 +538,7 @@ impl Player {
         } else {
             "PAUSE"
         };
-        let snd = ::data::audio::QUALITIES[self.quality].name;
+        let snd = self.qualities[self.quality].name;
         let vol = if self.muted { format!("{} MUTE", snd) } else { format!("{} vol {}%", snd, self.volume as usize * 10) };
         let base = term.h - 5;
         let head = format!("{}  {}  {:02}:{:02} / {:02}:{:02}  frame {}/{}  {}x{}  {}", state, self.name, sec / 60, sec % 60, all / 60, all % 60, self.frame + 1, n, self.w, self.h, vol);
@@ -553,6 +604,7 @@ impl Player {
             Action::SizeUp => self.change_size(true),
             Action::SizeDown => self.change_size(false),
             Action::AudioQuality => self.change_quality(),
+            Action::Track => self.switch_track(),
             Action::Unknown => {}
         }
         true

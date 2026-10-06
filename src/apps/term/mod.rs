@@ -311,6 +311,20 @@ impl Shell {
                     }
                 }
             }
+            "rickroll" => {
+                match player::Player::from_track(1, term.w, term.h) {
+                    Ok(mut p) => {
+                        p.open_audio();
+                        self.mode = Mode::Player(p);
+                        term.clear();
+                    }
+                    Err(e) => {
+                        term.write_str("player: ");
+                        term.write_str(&e);
+                        term.write_str("\n");
+                    }
+                }
+            }
             "play" => {
                 let path = it.next();
                 let p = match path {
@@ -359,7 +373,7 @@ fn run_hello() -> Result<Vec<u8>, String> {
 }
 
 /// Запуск своего терминала. auto_play -- сразу открыть Bad Apple.
-pub fn run(auto_play: bool) -> Result<(), String> {
+pub fn run(auto_play: bool, auto_track: usize) -> Result<(), String> {
     let size = match std::env::var("SUMMUM_TERM") {
         Ok(s) => s,
         Err(_) => "100x30".to_string(),
@@ -373,7 +387,7 @@ pub fn run(auto_play: bool) -> Result<(), String> {
     shell.banner(&mut term);
     term.put_str(2, 3, &format!("backend: {} (chosen by SDL)", win.driver()), 8, 0);
     if auto_play {
-        match player::Player::from_badapple(term.w, term.h) {
+        match player::Player::from_track(auto_track, term.w, term.h) {
             Ok(mut p) => {
                 p.open_audio();
                 shell.mode = Mode::Player(p);

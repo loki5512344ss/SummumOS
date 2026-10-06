@@ -31,11 +31,14 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
         ("data/banner.txt", include_str!("banner.txt")),
         ("data/controls.txt", include_str!("controls.txt")),
         ("data/audio.rs", include_str!("audio.rs")),
+        ("data/rickroll_audio.rs", include_str!("rickroll_audio.rs")),
+        ("data/video.rs", include_str!("video.rs")),
+        ("data/rickroll.rs", include_str!("rickroll.rs")),
         ("data/guard.rs", include_str!("guard.rs")),
     ]
 }
 
-pub const SUMMA: u32 = 0x8a1ca364; // СУММА: 0x8a1ca364
+pub const SUMMA: u32 = 0x79756b5e; // СУММА: 0x79756b5e
 
 /// Видео весит как небольшая луна, поэтому каждый 97-й байт. Остальные байты
 /// тоже проверяются, но мысленно.

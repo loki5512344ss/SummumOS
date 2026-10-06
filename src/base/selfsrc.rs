@@ -45,6 +45,9 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../data/badapple.rs"));
     s.push_str(include_str!("../data/controls.txt"));
     s.push_str(include_str!("../data/audio.rs"));
+    s.push_str(include_str!("../data/rickroll_audio.rs"));
+    s.push_str(include_str!("../data/video.rs"));
+    s.push_str(include_str!("../data/rickroll.rs"));
     s.push_str(include_str!("../data/guard.rs"));
     s.push_str(include_str!("../util/mod.rs"));
     s.push_str(include_str!("../util/hex.rs"));

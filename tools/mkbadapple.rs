@@ -131,11 +131,13 @@ fn main() {
 
     let mut prefix = String::new();
     prefix.push_str("// ===========================================================================\n");
-    prefix.push_str("// badapple.rs: Bad Apple в нескольких размерах. Файл собирается\n");
+    prefix.push_str("// Видео в нескольких размерах. Файл собирается\n");
     prefix.push_str("// tools/mkbadapple.rs из mp4 и звука; руками не править.\n");
     prefix.push_str("// Внутри каждого размера -- BAV2, закодированный base64.\n");
     prefix.push_str("// ===========================================================================\n");
-    prefix.push_str("pub struct Version {\n    pub w: usize,\n    pub h: usize,\n    pub fps: usize,\n    pub frames: usize,\n    pub data: &'static str,\n}\n\n");
+    let name = if out_path.contains("rickroll") { "Rickroll" } else { "Bad Apple" };
+    prefix.push_str("use ::data::video::Version;\n\n");
+    prefix.push_str(&format!("pub const NAME: &'static str = \"{}\";\n\n", name));
     prefix.push_str("/// Таблица версий, от маленькой к большой. Строки индекса -- ниже, в шапке.\n");
     prefix.push_str("pub const VERSIONS: &'static [Version] = &[\n");
     for p in parts.iter() {
@@ -144,8 +146,8 @@ fn main() {
     prefix.push_str("];\n\n");
     prefix.push_str("/// base64 -> байты. Переводы строк и мусор пропускаем.\n");
     prefix.push_str("pub fn decode(s: &str) -> Vec<u8> {\n    let mut out: Vec<u8> = Vec::new();\n    let mut buf: u32 = 0;\n    let mut bits: u32 = 0;\n    for b in s.bytes() {\n        let v = match b {\n            b'A'..=b'Z' => b - b'A',\n            b'a'..=b'z' => b - b'a' + 26,\n            b'0'..=b'9' => b - b'0' + 52,\n            b'+' => 62,\n            b'/' => 63,\n            _ => continue,\n        };\n        buf = (buf << 6) | v as u32;\n        bits += 6;\n        if bits >= 8 {\n            bits -= 8;\n            out.push((buf >> bits) as u8);\n            buf &= (1u32 << bits) - 1;\n        }\n    }\n    out\n}\n\n");
-    prefix.push_str("/// Выбирает самый большой размер, который влезает в сетку (w x h).\n");
-    prefix.push_str("pub fn best_for(w: usize, h: usize) -> usize {\n    let mut best = 0;\n    for i in 0..VERSIONS.len() {\n        if VERSIONS[i].w <= w && VERSIONS[i].h <= h {\n            best = i;\n        }\n    }\n    best\n}\n\n");
+    prefix.push_str("/// Самый большой размер, который влезает в сетку.\n");
+    prefix.push_str("pub fn best_for(w: usize, h: usize) -> usize {\n    ::data::video::best_for(VERSIONS, w, h)\n}\n\n");
 
     // Сколько строк занимает шапка вместе с индексом.
     let index_head = 8 + parts.len() + 2;

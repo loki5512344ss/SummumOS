@@ -26,8 +26,8 @@ name = "mkfont"
 path = "tools/mkfont.rs"
 
 [[bin]]
-name = "mkaudio_raw"
-path = "tools/mkaudio_raw.rs"
+name = "mkcodec"
+path = "tools/mkcodec.rs"
 
 [[bin]]
 name = "mkbadapple"

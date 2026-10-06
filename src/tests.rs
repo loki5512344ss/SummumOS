@@ -205,16 +205,37 @@ mod term_tests {
     #[test]
     fn audio_quality_levels_are_real_pcm() {
         let q = ::data::audio::QUALITIES;
-        assert_eq!(q.len(), 5);
+        assert_eq!(q.len(), 7);
         for i in 0..q.len() {
             assert!(q[i].rate > 0);
+            assert!(q[i].kbps == q[i].rate * 4 / 1000);
             if i > 0 {
                 assert!(q[i].rate > q[i - 1].rate);
+                assert!(q[i].kbps > q[i - 1].kbps);
             }
-            let expect = q[i].rate as usize * 300;
-            assert!(q[i].data.len() > expect, "аудио {} короче 5 минут", q[i].name);
         }
+        assert_eq!(q[q.len() - 1].kbps, 256);
         assert_eq!(::data::audio::default_quality(), q.len() - 1);
+        let top = ::data::audio::decode(&q[q.len() - 1]);
+        assert!(top.len() > q[q.len() - 1].rate as usize * 300, "декодер вернул слишком мало PCM");
+        let low = ::data::audio::decode(&q[0]);
+        assert!(low.len() > q[0].rate as usize * 300);
+    }
+
+    #[test]
+    fn rickroll_versions_and_audio_exist() {
+        assert_eq!(::rickroll::VERSIONS.len(), 5);
+        let idx = ::data::video::best_for(::rickroll::VERSIONS, 100, 30);
+        let v = &::rickroll::VERSIONS[idx];
+        assert!(v.w <= 100 && v.h <= 30);
+        let data = ::rickroll::decode(v.data);
+        assert_eq!(&data[0..4], b"BAV2");
+        assert_eq!(data[8] as usize | ((data[9] as usize) << 8), v.frames);
+        let q = ::rickroll_audio::QUALITIES;
+        assert_eq!(q.len(), 3);
+        assert_eq!(q[q.len() - 1].kbps, 256);
+        let pcm = ::data::audio::decode(&q[q.len() - 1]);
+        assert!(pcm.len() > q[q.len() - 1].rate as usize * 200);
     }
 
     #[test]
