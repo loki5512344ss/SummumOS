@@ -6,3 +6,4 @@ pub mod isa;
 pub mod bus;
 pub mod cpu;
 pub mod guard;
+pub mod gpu;

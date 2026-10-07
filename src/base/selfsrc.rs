@@ -13,6 +13,7 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../hw/alu.rs"));
     s.push_str(include_str!("../hw/isa.rs"));
     s.push_str(include_str!("../hw/cpu.rs"));
+    s.push_str(include_str!("../hw/gpu.rs"));
     s.push_str(include_str!("../hw/bus.rs"));
     s.push_str(include_str!("../hw/guard.rs"));
     s.push_str(include_str!("../toolchain/mod.rs"));
@@ -33,6 +34,7 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../apps/selftest.asm"));
     s.push_str(include_str!("../apps/player.asm"));
     s.push_str(include_str!("../apps/term/mod.rs"));
+    s.push_str(include_str!("../apps/term/model.rs"));
     s.push_str(include_str!("../apps/term/audio.rs"));
     s.push_str(include_str!("../apps/term/player.rs"));
     s.push_str(include_str!("../apps/term/font.rs"));
@@ -45,6 +47,7 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../data/badapple.rs"));
     s.push_str(include_str!("../data/controls.txt"));
     s.push_str(include_str!("../data/audio.rs"));
+    s.push_str(include_str!("../data/snd.rs"));
     s.push_str(include_str!("../data/rickroll_audio.rs"));
     s.push_str(include_str!("../data/video.rs"));
     s.push_str(include_str!("../data/rickroll.rs"));

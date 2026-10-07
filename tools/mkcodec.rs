@@ -18,6 +18,9 @@ use std::io::Write;
 use std::process::Command;
 use std::process::Stdio;
 
+#[path = "../src/data/snd.rs"]
+mod snd;
+
 const STEP: [i32; 89] = [
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,
     73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408,
@@ -64,17 +67,36 @@ fn quantize(diff: i32, step: i32) -> i32 {
     q
 }
 
-/// Кодирует s16le в SSND. Возвращает байты файла.
-fn encode(pcm: &[u8], rate: u32) -> Vec<u8> {
-    let samples: Vec<i16> = pcm
-        .chunks_exact(2)
-        .map(|c| (c[0] as i16) | ((c[1] as i16) << 8))
-        .collect();
+/// Нормализация по пику: сводим максимум к половине шкалы, чтобы даже
+/// на 10% громкости не било по ушам. Тишину не трогаем.
+fn normalize(samples: &mut Vec<i16>) {
+    let mut peak: i32 = 0;
+    for &s in samples.iter() {
+        let a = if s < 0 { -(s as i32) } else { s as i32 };
+        if a > peak {
+            peak = a;
+        }
+    }
+    if peak < 64 {
+        return;
+    }
+    let target = 16384i32;
+    if peak == target {
+        return;
+    }
+    for s in samples.iter_mut() {
+        let v = (*s as i32 * target) / peak;
+        *s = if v > 32767 { 32767 } else if v < -32768 { -32768 } else { v as i16 };
+    }
+}
+
+/// Кодирует s16le в SSND v2. Возвращает байты файла.
+fn encode(samples: &[i16], rate: u32) -> Vec<u8> {
     let block = 1024usize;
     let nblocks = (samples.len() + block - 1) / block;
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(b"SSND");
-    out.push(1); // version
+    out.push(2); // version: в шапке начальное состояние блока
     out.push(1); // channels
     out.extend_from_slice(&[0u8, 0]);
     out.extend_from_slice(&rate.to_le_bytes());
@@ -84,13 +106,18 @@ fn encode(pcm: &[u8], rate: u32) -> Vec<u8> {
     let seed: u32 = 0x5EED_1234 ^ rate.rotate_left(7);
     out.extend_from_slice(&seed.to_le_bytes());
     let mut crc_all: u32 = 0;
+    // Состояние предсказателя и шага живёт через все блоки. В шапку блока
+    // пишем НАЧАЛЬНОЕ состояние, поэтому блоки остаются независимыми.
+    let mut prev1 = 0i32;
+    let mut prev2 = 0i32;
+    let mut index = 0usize;
     for bi in 0..nblocks {
         let start = bi * block;
         let end = if start + block < samples.len() { start + block } else { samples.len() };
         let cnt = end - start;
-        let mut prev1 = if start > 0 { samples[start - 1] as i32 } else { 0 };
-        let mut prev2 = if start > 1 { samples[start - 2] as i32 } else { 0 };
-        let mut index = 0usize;
+        let init_prev1 = prev1;
+        let init_prev2 = prev2;
+        let init_index = index;
         let mut xkey = (seed as u8) ^ (bi as u8).wrapping_mul(37) ^ 0xA5;
         if xkey == 0 {
             xkey = 1;
@@ -124,9 +151,9 @@ fn encode(pcm: &[u8], rate: u32) -> Vec<u8> {
         }
         let crc = crc32(&payload);
         crc_all = crc_all.rotate_left(5) ^ crc;
-        out.extend_from_slice(&(prev1 as i16).to_le_bytes());
-        out.extend_from_slice(&(prev2 as i16).to_le_bytes());
-        out.push(index as u8);
+        out.extend_from_slice(&(init_prev1 as i16).to_le_bytes());
+        out.extend_from_slice(&(init_prev2 as i16).to_le_bytes());
+        out.push(init_index as u8);
         out.push(order);
         out.push(xkey);
         out.push(0);
@@ -175,9 +202,16 @@ fn main() {
             eprintln!("ffmpeg не смог {} Гц", rate);
             std::process::exit(1);
         }
-        let enc = encode(&out.stdout, rate);
-        let path = format!("{}/s{}.snd", dir, kbps);
-        File::create(&path).unwrap().write_all(&enc).unwrap();
-        println!("{}: {} Гц, {} кбит/с, {} байт -> {}", name, rate, kbps, enc.len(), path);
+        let mut samples: Vec<i16> = out
+            .stdout
+            .chunks_exact(2)
+            .map(|c| ((c[0] as i16) | ((c[1] as i16) << 8)) as i16)
+            .collect();
+        normalize(&mut samples);
+        let enc = encode(&samples, rate);
+        let text = snd::raw_to_text(&enc);
+        let path = format!("{}/s{}.txt", dir, kbps);
+        File::create(&path).unwrap().write_all(&text).unwrap();
+        println!("{}: {} Гц, {} кбит/с, SSND {} байт, txt {} байт -> {}", name, rate, kbps, enc.len(), text.len(), path);
     }
 }

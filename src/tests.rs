@@ -102,6 +102,20 @@ mod prikol_tests {
 }
 
 #[cfg(test)]
+mod gpu_tests {
+    #[test]
+    fn vulkan_compute_matches_cpu() {
+        match ::hw::gpu::benchmark() {
+            Ok(r) => {
+                println!("vulkan: {} / {} ms / checksum {:08x}", r.device, r.millis, r.checksum);
+                assert!(r.elements > 0);
+            }
+            Err(e) => panic!("vulkan: {}", e),
+        }
+    }
+}
+
+#[cfg(test)]
 mod term_tests {
     use term;
     use term::player::Action;
@@ -188,6 +202,19 @@ mod term_tests {
         assert_eq!(c.action(&Key::Char(b']')), Action::SizeUp);
         assert_eq!(c.action(&Key::Char(b'q')), Action::Quit);
         assert_eq!(c.action(&Key::Char(b'a')), Action::AudioQuality);
+        assert_eq!(c.action(&Key::Char(b'l')), Action::Loop);
+        assert_eq!(c.action(&Key::Char(b'n')), Action::NextTrack);
+        assert_eq!(c.action(&Key::PageDown), Action::SeekForwardFast);
+        assert_eq!(c.action(&Key::PageUp), Action::SeekBackFast);
+    }
+
+    #[test]
+    fn switch_track_starts_from_zero() {
+        let mut p = Player::from_badapple(100, 30).ok().unwrap();
+        p.set_frame_for_test(100);
+        assert!(p.key(&Key::Char(b't')));
+        assert_eq!(p.track_for_test(), 1);
+        assert_eq!(p.frame_for_test(), 0, "после смены трека видео должно начаться с начала");
     }
 
     #[test]
@@ -220,6 +247,64 @@ mod term_tests {
         assert!(top.len() > q[q.len() - 1].rate as usize * 300, "декодер вернул слишком мало PCM");
         let low = ::data::audio::decode(&q[0]);
         assert!(low.len() > q[0].rate as usize * 300);
+        // Музыка не должна выглядеть белым шумом: у шума переходов через
+        // середину почти половина, у нормального сигнала заметно меньше.
+        let mut cross = 0usize;
+        for w in top.windows(2) {
+            if (w[0] < 128) != (w[1] < 128) {
+                cross += 1;
+            }
+        }
+        let zcr = cross as f64 / (top.len() - 1) as f64;
+        assert!(zcr < 0.35, "звук похож на шум: zero-crossing rate {:.3}", zcr);
+        if std::env::var("SND_DUMP").is_ok() {
+            let path = std::env::temp_dir().join("badapple_dec.wav");
+            let mut f = std::fs::File::create(&path).unwrap();
+            use std::io::Write;
+            let n = top.len() as u32;
+            let rate = q[q.len() - 1].rate;
+            let mut h: Vec<u8> = Vec::new();
+            h.extend_from_slice(b"RIFF");
+            h.extend_from_slice(&(36 + n).to_le_bytes());
+            h.extend_from_slice(b"WAVEfmt ");
+            h.extend_from_slice(&16u32.to_le_bytes());
+            h.extend_from_slice(&1u16.to_le_bytes());
+            h.extend_from_slice(&1u16.to_le_bytes());
+            h.extend_from_slice(&rate.to_le_bytes());
+            h.extend_from_slice(&rate.to_le_bytes());
+            h.extend_from_slice(&1u16.to_le_bytes());
+            h.extend_from_slice(&8u16.to_le_bytes());
+            h.extend_from_slice(b"data");
+            h.extend_from_slice(&n.to_le_bytes());
+            f.write_all(&h).unwrap();
+            f.write_all(&top).unwrap();
+            println!("PCM записан в {}", path.display());
+        }
+    }
+
+    #[test]
+    fn ssnd_roundtrip_is_music_not_noise() {
+        let rate = 48000u32;
+        let n = rate as usize * 2;
+        let mut src: Vec<i16> = Vec::with_capacity(n);
+        for i in 0..n {
+            let t = i as f64 / rate as f64;
+            let v = (t * 440.0 * 6.2831853).sin() * 9000.0
+                + (t * 1234.0 * 6.2831853).sin() * 4000.0;
+            src.push(v as i16);
+        }
+        let enc = ::data::audio::encode_for_test(&src, rate);
+        let text: &'static str = Box::leak(String::from_utf8(::data::snd::raw_to_text(&enc)).unwrap().into_boxed_str());
+        let q = ::data::audio::Quality { name: "test", rate: rate, kbps: 192, data: text };
+        let dec = ::data::audio::decode(&q);
+        assert_eq!(dec.len(), n);
+        let mut err = 0u64;
+        for i in 0..n {
+            let want = (src[i] as i32 >> 8) + 128;
+            err += (dec[i] as i32 - want).unsigned_abs() as u64;
+        }
+        let mae = err as f64 / n as f64;
+        assert!(mae < 12.0, "SSND слишком сильно врёт: MAE {:.1}", mae);
     }
 
     #[test]
@@ -248,6 +333,17 @@ mod term_tests {
         assert_eq!(data[4] as usize, v.w);
         assert_eq!(data[5] as usize, v.h);
         assert_eq!(data[8] as usize | ((data[9] as usize) << 8), v.frames);
+    }
+
+    #[test]
+    fn model3d_draws_and_rotates() {
+        let mut m = term::model::Model3d::new();
+        let mut t = Term::new(80, 24);
+        m.draw(&mut t);
+        assert!(t.cells.iter().any(|c| c.ch != b' '), "3D объект должен что-то нарисовать");
+        assert!(m.key(&Key::Char(b'2')));
+        assert!(m.key(&Key::Char(b'+')));
+        assert!(!m.key(&Key::Char(b'q')));
     }
 
     #[test]

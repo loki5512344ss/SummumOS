@@ -96,6 +96,8 @@ pub enum Key {
     Enter,
     Backspace,
     Escape,
+    PageUp,
+    PageDown,
     Other,
 }
 
@@ -112,8 +114,8 @@ pub fn key_from_sym(sym: u32) -> Key {
         SDLK_DOWN => Key::Down,
         SDLK_HOME => Key::Home,
         SDLK_END => Key::End,
-        SDLK_PAGEUP => Key::Other,
-        SDLK_PAGEDOWN => Key::Other,
+        SDLK_PAGEUP => Key::PageUp,
+        SDLK_PAGEDOWN => Key::PageDown,
         _ => {
             if sym >= 32 && sym < 127 {
                 Key::Char(sym as u8)

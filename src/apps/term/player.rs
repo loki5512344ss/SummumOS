@@ -25,6 +25,10 @@ pub enum Action {
     SizeDown,
     AudioQuality,
     Track,
+    SeekBackFast,
+    SeekForwardFast,
+    NextTrack,
+    Loop,
     Quit,
     Unknown,
 }
@@ -56,6 +60,8 @@ impl Controls {
                 "enter" => Key::Enter,
                 "backspace" => Key::Backspace,
                 "escape" => Key::Escape,
+                "pageup" => Key::PageUp,
+                "pagedown" => Key::PageDown,
                 other => {
                     let b = other.as_bytes();
                     if b.len() == 1 {
@@ -78,6 +84,10 @@ impl Controls {
                 "size_down" => Action::SizeDown,
                 "audio_quality" => Action::AudioQuality,
                 "track" => Action::Track,
+                "seek_back_fast" => Action::SeekBackFast,
+                "seek_forward_fast" => Action::SeekForwardFast,
+                "next_track" => Action::NextTrack,
+                "loop" => Action::Loop,
                 "quit" => Action::Quit,
                 _ => Action::Unknown,
             };
@@ -119,6 +129,8 @@ impl Controls {
             Key::Enter => "ENTER",
             Key::Backspace => "BACKSPACE",
             Key::Escape => "ESC",
+            Key::PageUp => "PAGEUP",
+            Key::PageDown => "PAGEDOWN",
             Key::Other => "?",
         }
     }
@@ -137,6 +149,10 @@ impl Controls {
             Action::SizeDown => "size -",
             Action::AudioQuality => "audio quality",
             Action::Track => "switch track",
+            Action::SeekBackFast => "seek -60s",
+            Action::SeekForwardFast => "seek +60s",
+            Action::NextTrack => "next video",
+            Action::Loop => "auto repeat",
             Action::Quit => "quit",
             Action::Unknown => "",
         }
@@ -189,6 +205,7 @@ pub struct Player {
     view_h: usize,
     pending_fit: Option<(usize, usize)>,
     pending_at: Option<Instant>,
+    loop_auto: bool,
 }
 
 impl Player {
@@ -294,7 +311,7 @@ impl Player {
             audio_pos: 0,
             pcm: Vec::new(),
             quality: ::data::audio::default_quality(),
-            volume: 8,
+            volume: 5,
             muted: false,
             controls: Controls::from_text(CONTROLS_TXT),
             version: None,
@@ -302,6 +319,7 @@ impl Player {
             view_h: h + 5,
             pending_fit: None,
             pending_at: None,
+            loop_auto: false,
         })
     }
 
@@ -329,6 +347,18 @@ impl Player {
         self.audio_pos
     }
 
+    pub fn frame_for_test(&self) -> usize {
+        self.frame
+    }
+
+    pub fn set_frame_for_test(&mut self, f: usize) {
+        self.frame = f;
+    }
+
+    pub fn track_for_test(&self) -> usize {
+        self.track
+    }
+
     /// Просит подобрать размер после изменения окна (с задержкой, чтобы не
     /// перекодировать видео на каждый пиксель при перетаскивании).
     pub fn request_fit(&mut self, view_w: usize, view_h: usize) {
@@ -352,6 +382,7 @@ impl Player {
             p.audio_pos = self.audio_pos;
             p.pcm = std::mem::take(&mut self.pcm);
             p.quality = self.quality;
+            p.loop_auto = self.loop_auto;
             *self = p;
         }
     }
@@ -364,20 +395,34 @@ impl Player {
         self.reset_audio_pos();
     }
 
-    fn switch_track(&mut self) {
-        if self.track > 1 {
+    fn set_track(&mut self, new: usize) {
+        if new > 1 || new == self.track {
             return;
         }
-        let new = 1 - self.track;
         let (versions, _) = Player::track_parts(new);
         let idx = ::data::video::best_for(versions, self.view_w, self.view_h.saturating_sub(5));
         if let Ok(mut p) = Player::from_version(new, idx, self.view_w, self.view_h) {
-            p.frame = if self.frame < p.total() { self.frame } else { p.total() - 1 };
-            p.playing = self.playing;
+            // Смена трека -- всегда с нуля, а не с той же секунды.
+            p.frame = 0;
+            p.acc = 0.0;
+            p.playing = true;
             p.volume = self.volume;
             p.muted = self.muted;
+            p.loop_auto = self.loop_auto;
             *self = p;
             self.open_audio();
+        }
+    }
+
+    fn switch_track(&mut self) {
+        if self.track <= 1 {
+            self.set_track(1 - self.track);
+        }
+    }
+
+    fn next_track(&mut self) {
+        if self.track <= 1 {
+            self.set_track((self.track + 1) % 2);
         }
     }
 
@@ -454,6 +499,12 @@ impl Player {
                 }
             }
         }
+        if !self.playing && self.loop_auto && self.frame + 1 >= self.total() {
+            self.frame = 0;
+            self.acc = 0.0;
+            self.playing = true;
+            self.reset_audio_pos();
+        }
         self.sync_audio();
     }
 
@@ -495,6 +546,7 @@ impl Player {
                 p.audio_pos = self.audio_pos;
                 p.pcm = std::mem::take(&mut self.pcm);
                 p.quality = self.quality;
+                p.loop_auto = self.loop_auto;
                 *self = p;
             }
         }
@@ -541,7 +593,8 @@ impl Player {
         let snd = self.qualities[self.quality].name;
         let vol = if self.muted { format!("{} MUTE", snd) } else { format!("{} vol {}%", snd, self.volume as usize * 10) };
         let base = term.h - 5;
-        let head = format!("{}  {}  {:02}:{:02} / {:02}:{:02}  frame {}/{}  {}x{}  {}", state, self.name, sec / 60, sec % 60, all / 60, all % 60, self.frame + 1, n, self.w, self.h, vol);
+        let lp = if self.loop_auto { " LOOP" } else { "" };
+        let head = format!("{}  {}  {:02}:{:02} / {:02}:{:02}  frame {}/{}  {}x{}  {}{}", state, self.name, sec / 60, sec % 60, all / 60, all % 60, self.frame + 1, n, self.w, self.h, vol, lp);
         term.put_str(1, base, &head, 15, 0);
 
         let width = term.w - 12;
@@ -605,6 +658,10 @@ impl Player {
             Action::SizeDown => self.change_size(false),
             Action::AudioQuality => self.change_quality(),
             Action::Track => self.switch_track(),
+            Action::SeekBackFast => self.seek(-(self.fps as i64) * 60),
+            Action::SeekForwardFast => self.seek(self.fps as i64 * 60),
+            Action::NextTrack => self.next_track(),
+            Action::Loop => self.loop_auto = !self.loop_auto,
             Action::Unknown => {}
         }
         true
