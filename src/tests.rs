@@ -104,6 +104,87 @@ mod prikol_tests {
 #[cfg(test)]
 mod gpu_tests {
     #[test]
+    fn vulkan_field_shader_draws_pixels() {
+        let w = 80usize;
+        let h = 24usize;
+        let mut g = match ::hw::gpu::Gpu::new(include_bytes!("hw/field.spv"), (16 + w * h) * 4) {
+            Ok(g) => g,
+            Err(e) => panic!("vulkan: {}", e),
+        };
+        for frame in 0..5 {
+            {
+                let data = g.words_mut();
+                let p = ::hw::gpu::field_params(w as u32, h as u32, 1, frame * 16, 1.0, 0.0, 0.0);
+                for i in 0..8 {
+                    data[i] = p[i];
+                }
+            }
+            g.run(((w * h + 63) / 64) as u32).unwrap();
+        }
+        let data = g.words();
+        let lit = data[16..16 + w * h].iter().filter(|&&v| v != 0).count();
+        assert!(lit > w * h / 4, "GPU-шейдер почти ничего не нарисовал: {}", lit);
+        if std::env::var("GPU_PIC").is_ok() {
+            let ramp = b" .:-=+*#%@";
+            for y in 0..h {
+                let mut line = String::new();
+                for x in 0..w {
+                    let v = data[16 + y * w + x];
+                    let lum = (((v >> 16) & 255) * 3 + ((v >> 8) & 255) * 6 + (v & 255)) / 10;
+                    line.push(ramp[((lum as usize * ramp.len()) / 256).min(ramp.len() - 1)] as char);
+                }
+                println!("{}", line);
+            }
+        }
+    }
+
+    #[test]
+    fn vulkan_model3d_draws_cube_on_gpu() {
+        let w = 60usize;
+        let h = 20usize;
+        let maxv = 256usize;
+        let maxe = 512usize;
+        let ooff = 16 + maxv * 3 + maxe * 2;
+        let mut g = match ::hw::gpu::Gpu::new(include_bytes!("hw/model3d.spv"), (ooff + w * h) * 4) {
+            Ok(g) => g,
+            Err(e) => panic!("vulkan: {}", e),
+        };
+        for frame in 0..5 {
+            {
+                let data = g.words_mut();
+                for d in data.iter_mut() {
+                    *d = 0;
+                }
+                data[0] = w as u32;
+                data[1] = h as u32;
+                data[2] = (0.4 + frame as f32 * 0.1).to_bits();
+                data[3] = (0.7 + frame as f32 * 0.2).to_bits();
+                data[4] = 7.0f32.to_bits();
+                data[5] = 8;
+                data[6] = 12;
+                let verts = [
+                    [-1.0f32, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0],
+                    [-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0],
+                ];
+                for i in 0..8 {
+                    data[16 + i * 3] = verts[i][0].to_bits();
+                    data[16 + i * 3 + 1] = verts[i][1].to_bits();
+                    data[16 + i * 3 + 2] = verts[i][2].to_bits();
+                }
+                let edges = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7)];
+                for i in 0..12 {
+                    data[16 + maxv * 3 + i * 2] = edges[i].0;
+                    data[16 + maxv * 3 + i * 2 + 1] = edges[i].1;
+                }
+            }
+            g.run(((w * h + 63) / 64) as u32).unwrap();
+        }
+        let data = g.words();
+        let lit = data[ooff..ooff + w * h].iter().filter(|&&v| (v & 0xFF) != 32).count();
+        assert!(lit > 20, "GPU-растеризатор не нарисовал куб: {}", lit);
+    }
+
+    #[test]
     fn vulkan_compute_matches_cpu() {
         match ::hw::gpu::benchmark() {
             Ok(r) => {
@@ -333,6 +414,17 @@ mod term_tests {
         assert_eq!(data[4] as usize, v.w);
         assert_eq!(data[5] as usize, v.h);
         assert_eq!(data[8] as usize | ((data[9] as usize) << 8), v.frames);
+    }
+
+    #[test]
+    fn shader_view_draws_on_gpu_and_switches_modes() {
+        let mut s = term::shaderview::ShaderView::new(1);
+        let mut t = Term::new(80, 24);
+        s.draw(&mut t);
+        assert!(t.cells.iter().any(|c| c.ch != b' '), "шейдер должен что-то нарисовать");
+        assert!(s.key(&Key::Char(b'2')));
+        assert!(s.key(&Key::Char(b'3')));
+        assert!(!s.key(&Key::Char(b'q')));
     }
 
     #[test]

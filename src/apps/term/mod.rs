@@ -8,10 +8,12 @@ pub mod font;
 pub mod model;
 pub mod player;
 pub mod sdl;
+pub mod shaderview;
 
 use std::time::Instant;
 use self::sdl::Event;
 use self::model::Model3d;
+use self::shaderview::ShaderView;
 use self::sdl::Key;
 
 pub const COLORS: [u32; 16] = [
@@ -183,6 +185,7 @@ enum Mode {
     Shell,
     Player(player::Player),
     Model(Model3d),
+    Shader(ShaderView),
 }
 
 struct Shell {
@@ -245,6 +248,19 @@ impl Shell {
                     self.banner(term);
                 }
             }
+            Mode::Shader(_) => {
+                let quit = {
+                    if let Mode::Shader(ref mut s) = self.mode {
+                        !s.key(&k)
+                    } else {
+                        false
+                    }
+                };
+                if quit {
+                    self.mode = Mode::Shell;
+                    self.banner(term);
+                }
+            }
             Mode::Shell => match k {
                 Key::Char(b) => {
                     if b >= 32 && b < 127 && term.cx < term.w - 1 {
@@ -282,11 +298,13 @@ impl Shell {
         match self.mode {
             Mode::Player(ref mut p) => p.tick(dt),
             Mode::Model(ref mut m) => m.tick(dt),
+            Mode::Shader(ref mut s) => s.tick(dt),
             Mode::Shell => {}
         }
         match self.mode {
             Mode::Player(ref p) => p.draw(term),
-            Mode::Model(ref m) => m.draw(term),
+            Mode::Model(ref mut m) => m.draw(term),
+            Mode::Shader(ref mut s) => s.draw(term),
             Mode::Shell => {}
         }
     }
@@ -296,6 +314,7 @@ impl Shell {
         match self.mode {
             Mode::Player(ref mut p) => p.request_fit(w, h),
             Mode::Model(_) => {}
+            Mode::Shader(_) => {}
             Mode::Shell => {
                 if term.cy >= h {
                     term.cy = h - 1;
@@ -316,37 +335,22 @@ impl Shell {
                 term.write_str("help -- this text\n");
                 term.write_str("hello -- Hello, World! on the NAND CPU\n");
                 term.write_str("gpu -- Vulkan compute on the video card (RX included)\n");
-                term.write_str("shader -- run a GPU shader and draw its 80x24 output\n");
-                term.write_str("3d -- view a 3D object (cube/pyramid/octa/torus)\n");
+                term.write_str("shader [mandelbrot|plasma|julia] -- 2D shader on the GPU\n");
+                term.write_str("3d -- view a 3D object (cube/pyramid/octa/torus) on the GPU\n");
                 term.write_str("play [file.bav] -- Bad Apple: stop/play/seek/progress\n");
                 term.write_str("clear -- clear the screen\n");
                 term.write_str("quit -- leave this terminal\n");
             }
             "clear" => term.clear(),
             "shader" => {
-                match ::hw::gpu::benchmark() {
-                    Ok(r) => {
-                        let ramp = b" .:-=+*#%@";
-                        term.clear();
-                        let cols = if term.w - 2 < 80 { term.w - 2 } else { 80 };
-                        let rows = if term.h - 4 < 24 { term.h - 4 } else { 24 };
-                        for y in 0..rows {
-                            for x in 0..cols {
-                                let v = r.sample[y * 80 + x];
-                                let ch = ramp[(v as usize) % ramp.len()];
-                                let fg = if v & 1 == 0 { 10 } else { 14 };
-                                term.put(1 + x, 1 + y, ch, fg, 0);
-                            }
-                        }
-                        term.put_str(1, term.h - 2, &format!("shader SSBO 80x24 on {}: {} ms, checksum {:08x}", r.device, r.millis, r.checksum), 15, 0);
-                        term.put_str(1, term.h - 1, "gpu compute, not cpu. type gpu for the full 262144 x 2000 test", 8, 0);
-                    }
-                    Err(e) => {
-                        term.write_str("shader: ");
-                        term.write_str(&e);
-                        term.write_str("\n");
-                    }
-                }
+                let arg = cmd.split_whitespace().nth(1).unwrap_or("mandelbrot");
+                let mode = match arg {
+                    "plasma" => 1,
+                    "julia" => 2,
+                    _ => 0,
+                };
+                self.mode = Mode::Shader(ShaderView::new(mode));
+                term.clear();
             }
             "3d" | "cube" | "model" => {
                 self.mode = Mode::Model(Model3d::new());

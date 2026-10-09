@@ -35,6 +35,7 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../apps/player.asm"));
     s.push_str(include_str!("../apps/term/mod.rs"));
     s.push_str(include_str!("../apps/term/model.rs"));
+    s.push_str(include_str!("../apps/term/shaderview.rs"));
     s.push_str(include_str!("../apps/term/audio.rs"));
     s.push_str(include_str!("../apps/term/player.rs"));
     s.push_str(include_str!("../apps/term/font.rs"));

@@ -45,7 +45,7 @@ const ZONY: &'static [Zona] = &[
         guard: "src/apps/guard.rs",
         stride: 1,
         cpu: None,
-        files: &["src/apps/mod.rs", "src/apps/hello.asm", "src/apps/hello.c", "src/apps/quine.c", "src/apps/quine.lua", "src/apps/chess.c", "src/apps/selftest.asm", "src/apps/player.asm", "src/apps/term/mod.rs", "src/apps/term/model.rs", "src/apps/term/audio.rs", "src/apps/term/player.rs", "src/apps/term/font.rs", "src/apps/guard.rs"],
+        files: &["src/apps/mod.rs", "src/apps/hello.asm", "src/apps/hello.c", "src/apps/quine.c", "src/apps/quine.lua", "src/apps/chess.c", "src/apps/selftest.asm", "src/apps/player.asm", "src/apps/term/mod.rs", "src/apps/term/model.rs", "src/apps/term/shaderview.rs", "src/apps/term/audio.rs", "src/apps/term/player.rs", "src/apps/term/font.rs", "src/apps/guard.rs"],
     },
     Zona {
         imya: "junk (Жорик)",

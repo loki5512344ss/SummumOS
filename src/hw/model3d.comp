@@ -1,0 +1,99 @@
+#version 450
+// model3d: каркасный 3D-объект целиком на GPU.
+// data[0..7] -- параметры; дальше вершины (float bits), рёбра и ASCII-пиксели.
+layout(local_size_x = 64) in;
+layout(binding = 0) buffer B { uint data[]; } b;
+
+const uint MAXV = 256u;
+const uint MAXE = 512u;
+const uint VOFF = 16u;
+const uint EOFF = 16u + MAXV * 3u;
+const uint OOFF = 16u + MAXV * 3u + MAXE * 2u;
+
+vec3 rot(vec3 p, float ax, float ay) {
+    float sx = sin(ax);
+    float cx = cos(ax);
+    float y = p.y * cx - p.z * sx;
+    float z = p.y * sx + p.z * cx;
+    float sy = sin(ay);
+    float cy = cos(ay);
+    float x = p.x * cy + z * sy;
+    float z2 = -p.x * sy + z * cy;
+    return vec3(x, y, z2);
+}
+
+vec2 project(vec3 p, float zoom, vec2 center) {
+    float depth = p.z + 5.0;
+    float persp = 3.4 / max(depth, 0.2);
+    return vec2(center.x + p.x * zoom * 2.0 * persp, center.y - p.y * zoom * persp);
+}
+
+float segdist(vec2 p, vec2 a, vec2 bb) {
+    vec2 pa = p - a;
+    vec2 ba = bb - a;
+    float h = clamp(dot(pa, ba) / max(dot(ba, ba), 0.0001), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint w = b.data[0];
+    uint h = b.data[1];
+    if (w == 0u || h == 0u || i >= w * h) {
+        return;
+    }
+    float ax = uintBitsToFloat(b.data[2]);
+    float ay = uintBitsToFloat(b.data[3]);
+    float zoom = uintBitsToFloat(b.data[4]);
+    uint vc = b.data[5];
+    uint ec = b.data[6];
+    if (vc > MAXV) { vc = MAXV; }
+    if (ec > MAXE) { ec = MAXE; }
+
+    vec2 center = vec2(float(w) * 0.5, float(h) * 0.5);
+    vec2 pixel = vec2(float(i % w) + 0.5, float(i / w) + 0.5);
+    float best = 1e30;
+    uint ch = 32u;
+    uint fg = 0u;
+
+    for (uint e = 0u; e < ec; e++) {
+        uint a = b.data[EOFF + e * 2u];
+        uint c = b.data[EOFF + e * 2u + 1u];
+        if (a >= vc || c >= vc) {
+            continue;
+        }
+        vec3 va = vec3(
+            uintBitsToFloat(b.data[VOFF + a * 3u]),
+            uintBitsToFloat(b.data[VOFF + a * 3u + 1u]),
+            uintBitsToFloat(b.data[VOFF + a * 3u + 2u]));
+        vec3 vc3 = vec3(
+            uintBitsToFloat(b.data[VOFF + c * 3u]),
+            uintBitsToFloat(b.data[VOFF + c * 3u + 1u]),
+            uintBitsToFloat(b.data[VOFF + c * 3u + 2u]));
+        va = rot(va, ax, ay);
+        vc3 = rot(vc3, ax, ay);
+        if (va.z + 5.0 < 0.2 || vc3.z + 5.0 < 0.2) {
+            continue;
+        }
+        vec2 sa = project(va, zoom, center);
+        vec2 sb = project(vc3, zoom, center);
+        float d = segdist(pixel, sa, sb);
+        float depth = (va.z + vc3.z) * 0.5;
+        if (d < 0.75 && depth < best) {
+            best = depth;
+            if (depth > 0.6) {
+                ch = 35u; fg = 15u;      // # (шрифтовой @ похож на Q, не берём)
+            } else if (depth > 0.0) {
+                ch = 42u; fg = 14u;      // *
+            } else if (depth > -0.6) {
+                ch = 43u; fg = 11u;      // +
+            } else if (depth > -1.2) {
+                ch = 46u; fg = 10u;      // .
+            } else {
+                ch = 58u; fg = 8u;       // :
+            }
+        }
+    }
+
+    b.data[OOFF + i] = ch | (fg << 8);
+}

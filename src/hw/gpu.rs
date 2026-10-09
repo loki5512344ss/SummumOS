@@ -1,7 +1,10 @@
 // ===========================================================================
 // gpu: настоящий Vulkan compute без crate-зависимостей, только FFI к libvulkan.
-// Шелл вызывает gpu::benchmark, и считает уже не процессор, а видеокарта
-// (RADV на Radeon RX тоже подходит). Чертёж №22.
+// Шелл гоняет на видеокарте (RADV на Radeon RX тоже подходит):
+//   - benchmark: xorshift-нагрузка для проверки;
+//   - field.spv: mandelbrot / plasma / julia на GPU;
+//   - model3d.spv: каркасные 3D-объекты, растеризация тоже на GPU.
+// Чертёж №22.
 // ===========================================================================
 use std::os::raw::c_char;
 use std::os::raw::c_void;
@@ -321,6 +324,7 @@ extern "C" {
     fn vkUpdateDescriptorSets(dev: Device, writes: u32, wr: *const VkWriteDescriptorSet, copies: u32, cp: *const c_void);
     fn vkCreateCommandPool(dev: Device, info: *const VkCommandPoolCreateInfo, alloc: *const c_void, out: *mut Handle) -> i32;
     fn vkDestroyCommandPool(dev: Device, p: Handle, alloc: *const c_void);
+    fn vkResetCommandPool(dev: Device, pool: Handle, flags: u32) -> i32;
     fn vkAllocateCommandBuffers(dev: Device, info: *const VkCommandBufferAllocateInfo, out: *mut CommandBuffer) -> i32;
     fn vkBeginCommandBuffer(cmd: CommandBuffer, info: *const VkCommandBufferBeginInfo) -> i32;
     fn vkEndCommandBuffer(cmd: CommandBuffer) -> i32;
@@ -345,361 +349,453 @@ fn cstr(s: &'static [u8]) -> *const c_char {
     s.as_ptr() as *const c_char
 }
 
-/// Гоняет 262144 элемента по 2000 шагов xorshift на GPU.
-pub fn benchmark() -> Result<GpuResult, String> {
-    unsafe {
-        let app = VkApplicationInfo {
-            s_type: STRUCT_APPLICATION_INFO,
-            p_next: std::ptr::null(),
-            app_name: cstr(b"SummumOS\0"),
-            app_version: 1,
-            engine_name: cstr(b"govnokod\0"),
-            engine_version: 1,
-            api_version: (1 << 22) | (0 << 12), // Vulkan 1.0
-        };
-        let ici = VkInstanceCreateInfo {
-            s_type: STRUCT_INSTANCE_CREATE,
-            p_next: std::ptr::null(),
-            flags: 0,
-            app_info: &app,
-            layer_count: 0,
-            layers: std::ptr::null(),
-            ext_count: 0,
-            exts: std::ptr::null(),
-        };
-        let mut instance: Instance = std::ptr::null_mut();
-        if vkCreateInstance(&ici, std::ptr::null(), &mut instance) != VK_SUCCESS {
-            return Err("Vulkan: не создался instance (нет драйвера?)".to_string());
-        }
-        let mut ndev: u32 = 0;
-        vkEnumeratePhysicalDevices(instance, &mut ndev, std::ptr::null_mut());
-        if ndev == 0 {
-            vkDestroyInstance(instance, std::ptr::null());
-            return Err("Vulkan: видеокарты нет".to_string());
-        }
-        let mut devs: Vec<PhysicalDevice> = vec![std::ptr::null_mut(); ndev as usize];
-        vkEnumeratePhysicalDevices(instance, &mut ndev, devs.as_mut_ptr());
-        let physical = devs[0];
-        let mut props = [0u8; 4096];
-        vkGetPhysicalDeviceProperties(physical, props.as_mut_ptr() as *mut c_void);
-        let mut name_bytes = Vec::new();
-        for i in 20..276 {
-            if props[i] == 0 {
-                break;
-            }
-            name_bytes.push(props[i]);
-        }
-        let device_name = String::from_utf8_lossy(&name_bytes).to_string();
+/// Один Vulkan-контекст с одним storage buffer и одним compute pipeline.
+/// Пайплайн задаётся при создании, буфер хост-видимый: пишем параметры,
+/// запускаем dispatch, читаем результат.
+pub struct Gpu {
+    instance: Instance,
+    device: Device,
+    queue: Queue,
+    family: u32,
+    buffer: Handle,
+    memory: Handle,
+    mapped: *mut u32,
+    bytes: usize,
+    shader: Handle,
+    set_layout: Handle,
+    pipe_layout: Handle,
+    pipeline: Handle,
+    desc_pool: Handle,
+    desc_set: Handle,
+    cmd_pool: Handle,
+    cmd: CommandBuffer,
+    device_name: String,
+}
 
-        let mut nfam: u32 = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(physical, &mut nfam, std::ptr::null_mut());
-        let mut fams = vec![VkQueueFamilyProperties { flags: 0, queue_count: 0, timestamp_bits: 0, granularity: [0; 3] }; nfam as usize];
-        vkGetPhysicalDeviceQueueFamilyProperties(physical, &mut nfam, fams.as_mut_ptr());
-        let mut family: Option<u32> = None;
-        for i in 0..fams.len() {
-            if fams[i].flags & QUEUE_COMPUTE != 0 && fams[i].queue_count > 0 {
-                family = Some(i as u32);
-                break;
+impl Gpu {
+    pub fn new(spv_bytes: &[u8], bytes: usize) -> Result<Gpu, String> {
+        let bytes = (bytes + 3) & !3;
+        unsafe {
+            let app = VkApplicationInfo {
+                s_type: STRUCT_APPLICATION_INFO,
+                p_next: std::ptr::null(),
+                app_name: cstr(b"SummumOS\0"),
+                app_version: 1,
+                engine_name: cstr(b"govnokod\0"),
+                engine_version: 1,
+                api_version: (1 << 22) | (0 << 12), // Vulkan 1.0
+            };
+            let ici = VkInstanceCreateInfo {
+                s_type: STRUCT_INSTANCE_CREATE,
+                p_next: std::ptr::null(),
+                flags: 0,
+                app_info: &app,
+                layer_count: 0,
+                layers: std::ptr::null(),
+                ext_count: 0,
+                exts: std::ptr::null(),
+            };
+            let mut instance: Instance = std::ptr::null_mut();
+            if vkCreateInstance(&ici, std::ptr::null(), &mut instance) != VK_SUCCESS {
+                return Err("Vulkan: не создался instance (нет драйвера?)".to_string());
             }
-        }
-        let family = match family {
-            Some(f) => f,
-            None => {
+            let mut ndev: u32 = 0;
+            vkEnumeratePhysicalDevices(instance, &mut ndev, std::ptr::null_mut());
+            if ndev == 0 {
                 vkDestroyInstance(instance, std::ptr::null());
-                return Err("Vulkan: нет очереди compute".to_string());
+                return Err("Vulkan: видеокарты нет".to_string());
             }
-        };
-        let prio: f32 = 1.0;
-        let qci = VkDeviceQueueCreateInfo {
-            s_type: STRUCT_DEVICE_QUEUE_CREATE,
-            p_next: std::ptr::null(),
-            flags: 0,
-            family: family,
-            count: 1,
-            priorities: &prio,
-        };
-        let dci = VkDeviceCreateInfo {
-            s_type: STRUCT_DEVICE_CREATE,
-            p_next: std::ptr::null(),
-            flags: 0,
-            queue_count: 1,
-            queues: &qci,
-            layer_count: 0,
-            layers: std::ptr::null(),
-            ext_count: 0,
-            exts: std::ptr::null(),
-            features: std::ptr::null(),
-        };
-        let mut device: Device = std::ptr::null_mut();
-        if vkCreateDevice(physical, &dci, std::ptr::null(), &mut device) != VK_SUCCESS {
-            vkDestroyInstance(instance, std::ptr::null());
-            return Err("Vulkan: не создался device".to_string());
-        }
-        let mut queue: Queue = std::ptr::null_mut();
-        vkGetDeviceQueue(device, family, 0, &mut queue);
+            let mut devs: Vec<PhysicalDevice> = vec![std::ptr::null_mut(); ndev as usize];
+            vkEnumeratePhysicalDevices(instance, &mut ndev, devs.as_mut_ptr());
+            let physical = devs[0];
+            let mut props = [0u8; 4096];
+            vkGetPhysicalDeviceProperties(physical, props.as_mut_ptr() as *mut c_void);
+            let mut name_bytes = Vec::new();
+            for i in 20..276 {
+                if props[i] == 0 {
+                    break;
+                }
+                name_bytes.push(props[i]);
+            }
+            let device_name = String::from_utf8_lossy(&name_bytes).to_string();
 
-        const N: usize = 262144;
-        let bytes = (N * 4) as u64;
-        let bci = VkBufferCreateInfo {
-            s_type: STRUCT_BUFFER_CREATE,
-            p_next: std::ptr::null(),
-            flags: 0,
-            size: bytes,
-            usage: BUFFER_USAGE_STORAGE,
-            sharing: SHARING_EXCLUSIVE,
-            family_count: 0,
-            families: std::ptr::null(),
-        };
-        let mut buffer: Handle = 0;
-        let r = vkCreateBuffer(device, &bci, std::ptr::null(), &mut buffer);
-        if r != VK_SUCCESS {
-            vkDestroyDevice(device, std::ptr::null());
-            vkDestroyInstance(instance, std::ptr::null());
-            return Err(format!("Vulkan: buffer {}", r));
-        }
-        let mut req = VkMemoryRequirements { size: 0, alignment: 0, type_bits: 0 };
-        vkGetBufferMemoryRequirements(device, buffer, &mut req);
-        let mut memprops = [0u8; 4096];
-        vkGetPhysicalDeviceMemoryProperties(physical, memprops.as_mut_ptr() as *mut c_void);
-        let type_count = u32::from_le_bytes([memprops[0], memprops[1], memprops[2], memprops[3]]) as usize;
-        let mut type_index: Option<u32> = None;
-        for i in 0..type_count {
-            let at = 4 + i * 8;
-            let flags = u64::from_le_bytes([memprops[at], memprops[at + 1], memprops[at + 2], memprops[at + 3], memprops[at + 4], memprops[at + 5], memprops[at + 6], memprops[at + 7]]) as u32;
-            if req.type_bits & (1 << i) != 0 && flags & (MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT) == (MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT) {
-                type_index = Some(i as u32);
-                break;
+            let mut nfam: u32 = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(physical, &mut nfam, std::ptr::null_mut());
+            let mut fams = vec![VkQueueFamilyProperties { flags: 0, queue_count: 0, timestamp_bits: 0, granularity: [0; 3] }; nfam as usize];
+            vkGetPhysicalDeviceQueueFamilyProperties(physical, &mut nfam, fams.as_mut_ptr());
+            let mut family: Option<u32> = None;
+            for i in 0..fams.len() {
+                if fams[i].flags & QUEUE_COMPUTE != 0 && fams[i].queue_count > 0 {
+                    family = Some(i as u32);
+                    break;
+                }
             }
-        }
-        let type_index = match type_index {
-            Some(t) => t,
-            None => {
+            let family = match family {
+                Some(f) => f,
+                None => {
+                    vkDestroyInstance(instance, std::ptr::null());
+                    return Err("Vulkan: нет очереди compute".to_string());
+                }
+            };
+            let prio: f32 = 1.0;
+            let qci = VkDeviceQueueCreateInfo {
+                s_type: STRUCT_DEVICE_QUEUE_CREATE,
+                p_next: std::ptr::null(),
+                flags: 0,
+                family: family,
+                count: 1,
+                priorities: &prio,
+            };
+            let dci = VkDeviceCreateInfo {
+                s_type: STRUCT_DEVICE_CREATE,
+                p_next: std::ptr::null(),
+                flags: 0,
+                queue_count: 1,
+                queues: &qci,
+                layer_count: 0,
+                layers: std::ptr::null(),
+                ext_count: 0,
+                exts: std::ptr::null(),
+                features: std::ptr::null(),
+            };
+            let mut device: Device = std::ptr::null_mut();
+            if vkCreateDevice(physical, &dci, std::ptr::null(), &mut device) != VK_SUCCESS {
+                vkDestroyInstance(instance, std::ptr::null());
+                return Err("Vulkan: не создался device".to_string());
+            }
+            let mut queue: Queue = std::ptr::null_mut();
+            vkGetDeviceQueue(device, family, 0, &mut queue);
+
+            let bci = VkBufferCreateInfo {
+                s_type: STRUCT_BUFFER_CREATE,
+                p_next: std::ptr::null(),
+                flags: 0,
+                size: bytes as u64,
+                usage: BUFFER_USAGE_STORAGE,
+                sharing: SHARING_EXCLUSIVE,
+                family_count: 0,
+                families: std::ptr::null(),
+            };
+            let mut buffer: Handle = 0;
+            if vkCreateBuffer(device, &bci, std::ptr::null(), &mut buffer) != VK_SUCCESS {
+                vkDestroyDevice(device, std::ptr::null());
+                vkDestroyInstance(instance, std::ptr::null());
+                return Err("Vulkan: buffer не создался".to_string());
+            }
+            let mut req = VkMemoryRequirements { size: 0, alignment: 0, type_bits: 0 };
+            vkGetBufferMemoryRequirements(device, buffer, &mut req);
+            let mut memprops = [0u8; 4096];
+            vkGetPhysicalDeviceMemoryProperties(physical, memprops.as_mut_ptr() as *mut c_void);
+            let type_count = u32::from_le_bytes([memprops[0], memprops[1], memprops[2], memprops[3]]) as usize;
+            let mut type_index: Option<u32> = None;
+            for i in 0..type_count {
+                let at = 4 + i * 8;
+                let flags = u32::from_le_bytes([memprops[at], memprops[at + 1], memprops[at + 2], memprops[at + 3]]);
+                if req.type_bits & (1 << i) != 0 && flags & (MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT) == (MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT) {
+                    type_index = Some(i as u32);
+                    break;
+                }
+            }
+            let type_index = match type_index {
+                Some(t) => t,
+                None => {
+                    vkDestroyBuffer(device, buffer, std::ptr::null());
+                    vkDestroyDevice(device, std::ptr::null());
+                    vkDestroyInstance(instance, std::ptr::null());
+                    return Err("Vulkan: нет host-visible памяти".to_string());
+                }
+            };
+            let mai = VkMemoryAllocateInfo { s_type: STRUCT_MEMORY_ALLOCATE, p_next: std::ptr::null(), size: req.size, type_index: type_index };
+            let mut memory: Handle = 0;
+            if vkAllocateMemory(device, &mai, std::ptr::null(), &mut memory) != VK_SUCCESS {
                 vkDestroyBuffer(device, buffer, std::ptr::null());
                 vkDestroyDevice(device, std::ptr::null());
                 vkDestroyInstance(instance, std::ptr::null());
-                return Err("Vulkan: нет host-visible памяти".to_string());
+                return Err("Vulkan: память не выделилась".to_string());
             }
-        };
-        let mai = VkMemoryAllocateInfo { s_type: STRUCT_MEMORY_ALLOCATE, p_next: std::ptr::null(), size: req.size, type_index: type_index };
-        let mut memory: Handle = 0;
-        if vkAllocateMemory(device, &mai, std::ptr::null(), &mut memory) != VK_SUCCESS {
-            vkDestroyBuffer(device, buffer, std::ptr::null());
-            vkDestroyDevice(device, std::ptr::null());
-            vkDestroyInstance(instance, std::ptr::null());
-            return Err("Vulkan: память не выделилась".to_string());
-        }
-        vkBindBufferMemory(device, buffer, memory, 0);
-        let mut mapped: *mut c_void = std::ptr::null_mut();
-        vkMapMemory(device, memory, 0, WHOLE_SIZE, 0, &mut mapped);
-        let words = mapped as *mut u32;
-        for i in 0..N {
-            *words.offset(i as isize) = i as u32;
-        }
+            vkBindBufferMemory(device, buffer, memory, 0);
+            let mut mapped: *mut c_void = std::ptr::null_mut();
+            vkMapMemory(device, memory, 0, WHOLE_SIZE, 0, &mut mapped);
 
-        let spv_bytes = include_bytes!("compute.spv");
-        let mut spv: Vec<u32> = Vec::with_capacity(spv_bytes.len() / 4);
-        let mut k = 0;
-        while k + 3 < spv_bytes.len() {
-            spv.push(u32::from_le_bytes([spv_bytes[k], spv_bytes[k + 1], spv_bytes[k + 2], spv_bytes[k + 3]]));
-            k += 4;
-        }
-        let smci = VkShaderModuleCreateInfo {
-            s_type: STRUCT_SHADER_MODULE_CREATE,
-            p_next: std::ptr::null(),
-            flags: 0,
-            code_size: spv.len() * 4,
-            code: spv.as_ptr(),
-        };
-        let mut shader: Handle = 0;
-        if vkCreateShaderModule(device, &smci, std::ptr::null(), &mut shader) != VK_SUCCESS {
-            return Err("Vulkan: SPIR-V не загрузился".to_string());
-        }
-        let bind = VkDescriptorSetLayoutBinding {
-            binding: 0,
-            desc_type: DESC_STORAGE_BUFFER,
-            count: 1,
-            stage: SHADER_STAGE_COMPUTE,
-            samplers: std::ptr::null(),
-        };
-        let dslci = VkDescriptorSetLayoutCreateInfo {
-            s_type: STRUCT_DESCRIPTOR_SET_LAYOUT_CREATE,
-            p_next: std::ptr::null(),
-            flags: 0,
-            count: 1,
-            bindings: &bind,
-        };
-        let mut set_layout: Handle = 0;
-        vkCreateDescriptorSetLayout(device, &dslci, std::ptr::null(), &mut set_layout);
-        let plci = VkPipelineLayoutCreateInfo {
-            s_type: STRUCT_PIPELINE_LAYOUT_CREATE,
-            p_next: std::ptr::null(),
-            flags: 0,
-            set_count: 1,
-            sets: &set_layout,
-            push_count: 0,
-            pushes: std::ptr::null(),
-        };
-        let mut pipe_layout: Handle = 0;
-        vkCreatePipelineLayout(device, &plci, std::ptr::null(), &mut pipe_layout);
-        let stage = VkPipelineShaderStageCreateInfo {
-            s_type: STRUCT_PIPELINE_SHADER_STAGE_CREATE,
-            p_next: std::ptr::null(),
-            flags: 0,
-            stage: SHADER_STAGE_COMPUTE,
-            module: shader,
-            name: cstr(b"main\0"),
-            spec: std::ptr::null(),
-        };
-        let cpci = VkComputePipelineCreateInfo {
-            s_type: STRUCT_COMPUTE_PIPELINE_CREATE,
-            p_next: std::ptr::null(),
-            flags: 0,
-            stage: stage,
-            layout: pipe_layout,
-            base_handle: 0,
-            base_index: -1,
-        };
-        let mut pipeline: Handle = 0;
-        let rpipe = vkCreateComputePipelines(device, 0, 1, &cpci, std::ptr::null(), &mut pipeline);
-        if rpipe != VK_SUCCESS {
-            return Err(format!("Vulkan: compute pipeline {}", rpipe));
-        }
-        let pool_size = VkDescriptorPoolSize { desc_type: DESC_STORAGE_BUFFER, count: 1 };
-        let dpci = VkDescriptorPoolCreateInfo {
-            s_type: STRUCT_DESCRIPTOR_POOL_CREATE,
-            p_next: std::ptr::null(),
-            flags: 0,
-            max_sets: 1,
-            size_count: 1,
-            sizes: &pool_size,
-        };
-        let mut desc_pool: Handle = 0;
-        vkCreateDescriptorPool(device, &dpci, std::ptr::null(), &mut desc_pool);
-        let dsai = VkDescriptorSetAllocateInfo {
-            s_type: STRUCT_DESCRIPTOR_SET_ALLOCATE,
-            p_next: std::ptr::null(),
-            pool: desc_pool,
-            count: 1,
-            layouts: &set_layout,
-        };
-        let mut desc_set: Handle = 0;
-        let rds = vkAllocateDescriptorSets(device, &dsai, &mut desc_set);
-        if rds != VK_SUCCESS {
-            return Err(format!("Vulkan: descriptor set {}", rds));
-        }
-        let buffer_info = VkDescriptorBufferInfo { buffer: buffer, offset: 0, range: WHOLE_SIZE };
-        let write = VkWriteDescriptorSet {
-            s_type: STRUCT_WRITE_DESCRIPTOR_SET,
-            p_next: std::ptr::null(),
-            set: desc_set,
-            binding: 0,
-            array_element: 0,
-            count: 1,
-            desc_type: DESC_STORAGE_BUFFER,
-            image_info: std::ptr::null(),
-            buffer_info: &buffer_info,
-            texel_view: std::ptr::null(),
-        };
-        vkUpdateDescriptorSets(device, 1, &write, 0, std::ptr::null());
-
-        let cpci2 = VkCommandPoolCreateInfo {
-            s_type: STRUCT_COMMAND_POOL_CREATE,
-            p_next: std::ptr::null(),
-            flags: 2,
-            family: family,
-        };
-        let mut cmd_pool: Handle = 0;
-        let rcp = vkCreateCommandPool(device, &cpci2, std::ptr::null(), &mut cmd_pool);
-        if rcp != VK_SUCCESS {
-            return Err(format!("Vulkan: command pool {}", rcp));
-        }
-        let cbai = VkCommandBufferAllocateInfo {
-            s_type: STRUCT_COMMAND_BUFFER_ALLOCATE,
-            p_next: std::ptr::null(),
-            pool: cmd_pool,
-            level: COMMAND_LEVEL_PRIMARY,
-            count: 1,
-        };
-        let mut cmd: CommandBuffer = std::ptr::null_mut();
-        let rcb = vkAllocateCommandBuffers(device, &cbai, &mut cmd);
-        if rcb != VK_SUCCESS {
-            return Err(format!("Vulkan: command buffer {}", rcb));
-        }
-        let cbbi = VkCommandBufferBeginInfo {
-            s_type: STRUCT_COMMAND_BUFFER_BEGIN,
-            p_next: std::ptr::null(),
-            flags: 0,
-            inheritance: std::ptr::null(),
-        };
-        vkBeginCommandBuffer(cmd, &cbbi);
-        vkCmdBindPipeline(cmd, PIPELINE_BIND_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(cmd, PIPELINE_BIND_COMPUTE, pipe_layout, 0, 1, &desc_set, 0, std::ptr::null());
-        let to_gpu = VkMemoryBarrier { s_type: STRUCT_MEMORY_BARRIER, p_next: std::ptr::null(), src_access: ACCESS_HOST_WRITE, dst_access: ACCESS_SHADER_READ | ACCESS_SHADER_WRITE };
-        vkCmdPipelineBarrier(cmd, STAGE_HOST, STAGE_COMPUTE, 0, 1, &to_gpu, 0, std::ptr::null(), 0, std::ptr::null());
-        vkCmdDispatch(cmd, (N as u32 + 63) / 64, 1, 1);
-        let to_host = VkMemoryBarrier { s_type: STRUCT_MEMORY_BARRIER, p_next: std::ptr::null(), src_access: ACCESS_SHADER_WRITE, dst_access: ACCESS_HOST_READ };
-        vkCmdPipelineBarrier(cmd, STAGE_COMPUTE, STAGE_HOST, 0, 1, &to_host, 0, std::ptr::null(), 0, std::ptr::null());
-        vkEndCommandBuffer(cmd);
-        let submit = VkSubmitInfo {
-            s_type: STRUCT_SUBMIT,
-            p_next: std::ptr::null(),
-            wait_count: 0,
-            waits: std::ptr::null(),
-            stage_mask: std::ptr::null(),
-            cmd_count: 1,
-            cmds: &cmd,
-            signal_count: 0,
-            signals: std::ptr::null(),
-        };
-        let started = Instant::now();
-        let sub = vkQueueSubmit(queue, 1, &submit, 0);
-        let idle = vkQueueWaitIdle(queue);
-        if sub != VK_SUCCESS || idle != VK_SUCCESS {
-            return Err(format!("Vulkan: submit={} idle={}", sub, idle));
-        }
-        let millis = started.elapsed().as_millis();
-
-        let mut sample: Vec<u32> = Vec::with_capacity(80 * 24);
-        let mut checksum: u32 = 0;
-        let mut ok = true;
-        let mut first_bad: Option<(usize, u32, u32)> = None;
-        for i in 0..N {
-            let v = *words.offset(i as isize);
-            if sample.len() < 80 * 24 {
-                sample.push(v);
+            let mut spv: Vec<u32> = Vec::with_capacity(spv_bytes.len() / 4);
+            let mut k = 0;
+            while k + 3 < spv_bytes.len() {
+                spv.push(u32::from_le_bytes([spv_bytes[k], spv_bytes[k + 1], spv_bytes[k + 2], spv_bytes[k + 3]]));
+                k += 4;
             }
-            checksum = checksum.wrapping_add(v);
-            if i < 256 {
-                let mut x = (i as u32) ^ ((i as u32).wrapping_mul(2654435761));
-                for k in 0..2000u32 {
-                    x ^= x << 13;
-                    x ^= x >> 17;
-                    x ^= x << 5;
-                    x = x.wrapping_add(k ^ (i as u32));
-                }
-                if x != v {
-                    ok = false;
-                    if first_bad.is_none() {
-                        first_bad = Some((i, v, x));
-                    }
-                }
+            let smci = VkShaderModuleCreateInfo {
+                s_type: STRUCT_SHADER_MODULE_CREATE,
+                p_next: std::ptr::null(),
+                flags: 0,
+                code_size: spv.len() * 4,
+                code: spv.as_ptr(),
+            };
+            let mut shader: Handle = 0;
+            if vkCreateShaderModule(device, &smci, std::ptr::null(), &mut shader) != VK_SUCCESS {
+                return Err("Vulkan: SPIR-V не загрузился".to_string());
             }
+            let bind = VkDescriptorSetLayoutBinding {
+                binding: 0,
+                desc_type: DESC_STORAGE_BUFFER,
+                count: 1,
+                stage: SHADER_STAGE_COMPUTE,
+                samplers: std::ptr::null(),
+            };
+            let dslci = VkDescriptorSetLayoutCreateInfo {
+                s_type: STRUCT_DESCRIPTOR_SET_LAYOUT_CREATE,
+                p_next: std::ptr::null(),
+                flags: 0,
+                count: 1,
+                bindings: &bind,
+            };
+            let mut set_layout: Handle = 0;
+            vkCreateDescriptorSetLayout(device, &dslci, std::ptr::null(), &mut set_layout);
+            let plci = VkPipelineLayoutCreateInfo {
+                s_type: STRUCT_PIPELINE_LAYOUT_CREATE,
+                p_next: std::ptr::null(),
+                flags: 0,
+                set_count: 1,
+                sets: &set_layout,
+                push_count: 0,
+                pushes: std::ptr::null(),
+            };
+            let mut pipe_layout: Handle = 0;
+            vkCreatePipelineLayout(device, &plci, std::ptr::null(), &mut pipe_layout);
+            let stage = VkPipelineShaderStageCreateInfo {
+                s_type: STRUCT_PIPELINE_SHADER_STAGE_CREATE,
+                p_next: std::ptr::null(),
+                flags: 0,
+                stage: SHADER_STAGE_COMPUTE,
+                module: shader,
+                name: cstr(b"main\0"),
+                spec: std::ptr::null(),
+            };
+            let cpci = VkComputePipelineCreateInfo {
+                s_type: STRUCT_COMPUTE_PIPELINE_CREATE,
+                p_next: std::ptr::null(),
+                flags: 0,
+                stage: stage,
+                layout: pipe_layout,
+                base_handle: 0,
+                base_index: -1,
+            };
+            let mut pipeline: Handle = 0;
+            let rpipe = vkCreateComputePipelines(device, 0, 1, &cpci, std::ptr::null(), &mut pipeline);
+            if rpipe != VK_SUCCESS {
+                return Err(format!("Vulkan: compute pipeline {}", rpipe));
+            }
+            let pool_size = VkDescriptorPoolSize { desc_type: DESC_STORAGE_BUFFER, count: 1 };
+            let dpci = VkDescriptorPoolCreateInfo {
+                s_type: STRUCT_DESCRIPTOR_POOL_CREATE,
+                p_next: std::ptr::null(),
+                flags: 0,
+                max_sets: 1,
+                size_count: 1,
+                sizes: &pool_size,
+            };
+            let mut desc_pool: Handle = 0;
+            vkCreateDescriptorPool(device, &dpci, std::ptr::null(), &mut desc_pool);
+            let dsai = VkDescriptorSetAllocateInfo {
+                s_type: STRUCT_DESCRIPTOR_SET_ALLOCATE,
+                p_next: std::ptr::null(),
+                pool: desc_pool,
+                count: 1,
+                layouts: &set_layout,
+            };
+            let mut desc_set: Handle = 0;
+            let rds = vkAllocateDescriptorSets(device, &dsai, &mut desc_set);
+            if rds != VK_SUCCESS {
+                return Err(format!("Vulkan: descriptor set {}", rds));
+            }
+            let buffer_info = VkDescriptorBufferInfo { buffer: buffer, offset: 0, range: WHOLE_SIZE };
+            let write = VkWriteDescriptorSet {
+                s_type: STRUCT_WRITE_DESCRIPTOR_SET,
+                p_next: std::ptr::null(),
+                set: desc_set,
+                binding: 0,
+                array_element: 0,
+                count: 1,
+                desc_type: DESC_STORAGE_BUFFER,
+                image_info: std::ptr::null(),
+                buffer_info: &buffer_info,
+                texel_view: std::ptr::null(),
+            };
+            vkUpdateDescriptorSets(device, 1, &write, 0, std::ptr::null());
+
+            let cpci2 = VkCommandPoolCreateInfo {
+                s_type: STRUCT_COMMAND_POOL_CREATE,
+                p_next: std::ptr::null(),
+                flags: 2,
+                family: family,
+            };
+            let mut cmd_pool: Handle = 0;
+            if vkCreateCommandPool(device, &cpci2, std::ptr::null(), &mut cmd_pool) != VK_SUCCESS {
+                return Err("Vulkan: command pool".to_string());
+            }
+            let cbai = VkCommandBufferAllocateInfo {
+                s_type: STRUCT_COMMAND_BUFFER_ALLOCATE,
+                p_next: std::ptr::null(),
+                pool: cmd_pool,
+                level: COMMAND_LEVEL_PRIMARY,
+                count: 1,
+            };
+            let mut cmd: CommandBuffer = std::ptr::null_mut();
+            if vkAllocateCommandBuffers(device, &cbai, &mut cmd) != VK_SUCCESS {
+                return Err("Vulkan: command buffer".to_string());
+            }
+            Ok(Gpu {
+                instance: instance,
+                device: device,
+                queue: queue,
+                family: family,
+                buffer: buffer,
+                memory: memory,
+                mapped: mapped as *mut u32,
+                bytes: bytes,
+                shader: shader,
+                set_layout: set_layout,
+                pipe_layout: pipe_layout,
+                pipeline: pipeline,
+                desc_pool: desc_pool,
+                desc_set: desc_set,
+                cmd_pool: cmd_pool,
+                cmd: cmd,
+                device_name: device_name,
+            })
         }
-        vkUnmapMemory(device, memory);
-        vkDestroyCommandPool(device, cmd_pool, std::ptr::null());
-        vkDestroyDescriptorPool(device, desc_pool, std::ptr::null());
-        vkDestroyPipeline(device, pipeline, std::ptr::null());
-        vkDestroyPipelineLayout(device, pipe_layout, std::ptr::null());
-        vkDestroyDescriptorSetLayout(device, set_layout, std::ptr::null());
-        vkDestroyShaderModule(device, shader, std::ptr::null());
-        vkFreeMemory(device, memory, std::ptr::null());
-        vkDestroyBuffer(device, buffer, std::ptr::null());
-        vkDestroyDevice(device, std::ptr::null());
-        vkDestroyInstance(instance, std::ptr::null());
-        if !ok {
-            let b = first_bad.unwrap();
-            return Err(format!("Vulkan: GPU насчитал не то, что CPU: {} [{}] gpu={} cpu={}", device_name, b.0, b.1, b.2));
-        }
-        Ok(GpuResult { device: device_name, millis: millis, checksum: checksum, elements: N, sample: sample })
     }
+
+    pub fn device(&self) -> &str {
+        &self.device_name
+    }
+
+    pub fn words(&self) -> &[u32] {
+        unsafe { std::slice::from_raw_parts(self.mapped as *const u32, self.bytes / 4) }
+    }
+
+    pub fn words_mut(&mut self) -> &mut [u32] {
+        unsafe { std::slice::from_raw_parts_mut(self.mapped, self.bytes / 4) }
+    }
+
+    /// Записывает команды заново и ждёт выполнения.
+    pub fn run(&mut self, groups: u32) -> Result<(), String> {
+        unsafe {
+            if vkResetCommandPool(self.device, self.cmd_pool, 0) != VK_SUCCESS {
+                return Err("Vulkan: reset command pool".to_string());
+            }
+            let cbbi = VkCommandBufferBeginInfo {
+                s_type: STRUCT_COMMAND_BUFFER_BEGIN,
+                p_next: std::ptr::null(),
+                flags: 0,
+                inheritance: std::ptr::null(),
+            };
+            vkBeginCommandBuffer(self.cmd, &cbbi);
+            vkCmdBindPipeline(self.cmd, PIPELINE_BIND_COMPUTE, self.pipeline);
+            vkCmdBindDescriptorSets(self.cmd, PIPELINE_BIND_COMPUTE, self.pipe_layout, 0, 1, &self.desc_set, 0, std::ptr::null());
+            let to_gpu = VkMemoryBarrier {
+                s_type: STRUCT_MEMORY_BARRIER,
+                p_next: std::ptr::null(),
+                src_access: ACCESS_HOST_WRITE,
+                dst_access: ACCESS_SHADER_READ | ACCESS_SHADER_WRITE,
+            };
+            vkCmdPipelineBarrier(self.cmd, STAGE_HOST, STAGE_COMPUTE, 0, 1, &to_gpu, 0, std::ptr::null(), 0, std::ptr::null());
+            vkCmdDispatch(self.cmd, groups, 1, 1);
+            let to_host = VkMemoryBarrier {
+                s_type: STRUCT_MEMORY_BARRIER,
+                p_next: std::ptr::null(),
+                src_access: ACCESS_SHADER_WRITE,
+                dst_access: ACCESS_HOST_READ,
+            };
+            vkCmdPipelineBarrier(self.cmd, STAGE_COMPUTE, STAGE_HOST, 0, 1, &to_host, 0, std::ptr::null(), 0, std::ptr::null());
+            vkEndCommandBuffer(self.cmd);
+            let submit = VkSubmitInfo {
+                s_type: STRUCT_SUBMIT,
+                p_next: std::ptr::null(),
+                wait_count: 0,
+                waits: std::ptr::null(),
+                stage_mask: std::ptr::null(),
+                cmd_count: 1,
+                cmds: &self.cmd,
+                signal_count: 0,
+                signals: std::ptr::null(),
+            };
+            let sub = vkQueueSubmit(self.queue, 1, &submit, 0);
+            let idle = vkQueueWaitIdle(self.queue);
+            if sub != VK_SUCCESS || idle != VK_SUCCESS {
+                return Err(format!("Vulkan: submit={} idle={}", sub, idle));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Gpu {
+    fn drop(&mut self) {
+        unsafe {
+            vkUnmapMemory(self.device, self.memory);
+            vkDestroyCommandPool(self.device, self.cmd_pool, std::ptr::null());
+            vkDestroyDescriptorPool(self.device, self.desc_pool, std::ptr::null());
+            vkDestroyPipeline(self.device, self.pipeline, std::ptr::null());
+            vkDestroyPipelineLayout(self.device, self.pipe_layout, std::ptr::null());
+            vkDestroyDescriptorSetLayout(self.device, self.set_layout, std::ptr::null());
+            vkDestroyShaderModule(self.device, self.shader, std::ptr::null());
+            vkFreeMemory(self.device, self.memory, std::ptr::null());
+            vkDestroyBuffer(self.device, self.buffer, std::ptr::null());
+            vkDestroyDevice(self.device, std::ptr::null());
+            vkDestroyInstance(self.instance, std::ptr::null());
+            let _ = self.family;
+        }
+    }
+}
+
+/// Гоняет 262144 элемента по 2000 шагов xorshift на GPU.
+pub fn benchmark() -> Result<GpuResult, String> {
+    const N: usize = 262144;
+    let mut gpu = Gpu::new(include_bytes!("compute.spv"), N * 4)?;
+    {
+        let words = gpu.words_mut();
+        for i in 0..N {
+            words[i] = i as u32;
+        }
+    }
+    let started = Instant::now();
+    gpu.run(((N as u32) + 63) / 64)?;
+    let millis = started.elapsed().as_millis();
+    let words = gpu.words();
+    let mut sample: Vec<u32> = Vec::with_capacity(80 * 24);
+    let mut checksum: u32 = 0;
+    let mut ok = true;
+    let mut first_bad: Option<(usize, u32, u32)> = None;
+    for i in 0..N {
+        let v = words[i];
+        if sample.len() < 80 * 24 {
+            sample.push(v);
+        }
+        checksum = checksum.wrapping_add(v);
+        if i < 256 {
+            let mut x = (i as u32) ^ ((i as u32).wrapping_mul(2654435761));
+            for k in 0..2000u32 {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                x = x.wrapping_add(k ^ (i as u32));
+            }
+            if x != v {
+                ok = false;
+                if first_bad.is_none() {
+                    first_bad = Some((i, v, x));
+                }
+            }
+        }
+    }
+    if !ok {
+        let b = first_bad.unwrap();
+        return Err(format!("Vulkan: GPU насчитал не то, что CPU: {} [{}] gpu={} cpu={}", gpu.device(), b.0, b.1, b.2));
+    }
+    Ok(GpuResult { device: gpu.device().to_string(), millis: millis, checksum: checksum, elements: N, sample: sample })
+}
+
+/// Параметры для field.spv: размер, режим, время, зум, центр.
+pub fn field_params(w: u32, h: u32, mode: u32, time_ms: u32, zoom: f32, cx: f32, cy: f32) -> [u32; 8] {
+    [w, h, mode, time_ms, zoom.to_bits(), cx.to_bits(), cy.to_bits(), 0]
 }

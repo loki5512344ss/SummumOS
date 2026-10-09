@@ -1,0 +1,73 @@
+#version 450
+// field: 2D-шейдеры на GPU. data[0..7] -- параметры, data[16..] -- RGB-пиксели.
+layout(local_size_x = 64) in;
+layout(binding = 0) buffer B { uint data[]; } b;
+
+vec3 palette(float t) {
+    return 0.5 + 0.5 * cos(6.28318 * (vec3(0.0, 0.33, 0.67) + t));
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint w = b.data[0];
+    uint h = b.data[1];
+    if (w == 0u || h == 0u || i >= w * h) {
+        return;
+    }
+    uint mode = b.data[2];
+    float t = float(b.data[3]) * 0.001;
+    float zoom = uintBitsToFloat(b.data[4]);
+    float cx = uintBitsToFloat(b.data[5]);
+    float cy = uintBitsToFloat(b.data[6]);
+    uint x = i % w;
+    uint y = i / w;
+    vec2 uv = vec2(float(x), float(y)) / vec2(float(w), float(h)) - 0.5;
+    vec3 col = vec3(0.0);
+
+    if (mode == 0u) {
+        // Mandelbrot
+        vec2 c = vec2(cx, cy) + uv * vec2(3.2, 1.8) / zoom;
+        vec2 z = vec2(0.0);
+        int it = 0;
+        for (int k = 0; k < 96; k++) {
+            if (dot(z, z) > 4.0) {
+                break;
+            }
+            z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+            it++;
+        }
+        if (it >= 96) {
+            col = vec3(0.0);
+        } else {
+            col = palette(float(it) / 96.0 + 0.15);
+        }
+    } else if (mode == 1u) {
+        // Plasma
+        float a = uv.x * 8.0 / zoom + t * 0.7;
+        float d = uv.y * 8.0 / zoom - t * 0.9;
+        float v = sin(a) + sin(d * 1.3) + sin((a + d) * 0.7) + sin(sqrt(a * a + d * d) * 1.7 - t);
+        col = palette(v * 0.12 + t * 0.05);
+    } else {
+        // Julia
+        vec2 z = uv * vec2(3.0, 1.8) / zoom + vec2(cx, cy);
+        vec2 c = vec2(-0.8, 0.156);
+        int it = 0;
+        for (int k = 0; k < 96; k++) {
+            if (dot(z, z) > 4.0) {
+                break;
+            }
+            z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+            it++;
+        }
+        if (it >= 96) {
+            col = vec3(0.0);
+        } else {
+            col = palette(float(it) / 96.0 + 0.55);
+        }
+    }
+
+    uint r = uint(clamp(col.r, 0.0, 1.0) * 255.0);
+    uint g = uint(clamp(col.g, 0.0, 1.0) * 255.0);
+    uint bl = uint(clamp(col.b, 0.0, 1.0) * 255.0);
+    b.data[16u + i] = (r << 16) | (g << 8) | bl;
+}
