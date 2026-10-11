@@ -26,7 +26,7 @@ pub struct ShaderView {
 impl ShaderView {
     pub fn new(mode: usize) -> ShaderView {
         ShaderView {
-            mode: mode % 3,
+            mode: mode % 5,
             zoom: 1.0,
             cx: -0.6,
             cy: 0.0,
@@ -41,32 +41,22 @@ impl ShaderView {
 
     fn name(&self) -> &'static str {
         match self.mode {
-            0 => "mandelbrot",
-            1 => "plasma",
-            _ => "julia",
+            0 => "plasma",
+            1 => "sun",
+            2 => "pyramid",
+            3 => "lattice",
+            _ => "stars",
         }
     }
 
     fn reset(&mut self) {
         self.zoom = 1.0;
-        match self.mode {
-            0 => {
-                self.cx = -0.6;
-                self.cy = 0.0;
-            }
-            1 => {
-                self.cx = 0.0;
-                self.cy = 0.0;
-            }
-            _ => {
-                self.cx = 0.0;
-                self.cy = 0.0;
-            }
-        }
+        self.cx = 0.0;
+        self.cy = 0.0;
     }
 
     fn put_mode(&mut self, mode: usize) {
-        self.mode = mode % 3;
+        self.mode = mode % 5;
         self.reset();
     }
 
@@ -152,10 +142,10 @@ impl ShaderView {
                 }
             }
         }
-        let status = format!("shader {}   arrows pan   +/- zoom   [1] mandelbrot [2] plasma [3] julia   r reset   space {:<6}   q quit", self.name(), if self.paused { "play" } else { "pause" });
+        let status = format!("shader {}   arrows pan   +/- zoom   r reset   space {:<6}   q quit", self.name(), if self.paused { "play" } else { "pause" });
         term.put_str(1, term.h - 2, &status, 15, 0);
         if self.gpu.is_some() {
-            term.put_str(1, term.h - 1, "field.spv on the GPU, not one pixel on the CPU", 8, 0);
+            term.put_str(1, term.h - 1, "[1] plasma [2] sun [3] pyramid [4] lattice [5] stars", 8, 0);
         } else {
             let why = self.err.clone().unwrap_or_else(|| "Vulkan нет".to_string());
             term.put_str(1, term.h - 1, &format!("GPU нет: {}", why), 8, 0);
@@ -185,6 +175,8 @@ impl ShaderView {
             Key::Char(b'1') => self.put_mode(0),
             Key::Char(b'2') => self.put_mode(1),
             Key::Char(b'3') => self.put_mode(2),
+            Key::Char(b'4') => self.put_mode(3),
+            Key::Char(b'5') => self.put_mode(4),
             Key::Char(b'r') | Key::Char(b'R') => self.reset(),
             Key::Char(b' ') => self.paused = !self.paused,
             Key::Char(b'q') | Key::Char(b'Q') | Key::Escape => return false,

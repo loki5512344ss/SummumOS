@@ -418,12 +418,26 @@ mod term_tests {
 
     #[test]
     fn shader_view_draws_on_gpu_and_switches_modes() {
+        for mode in 0..5 {
+            let mut s = term::shaderview::ShaderView::new(mode);
+            let mut t = Term::new(80, 24);
+            s.draw(&mut t);
+            assert!(t.cells.iter().any(|c| c.ch != b' '), "шейдер {} ничего не нарисовал", mode);
+            if std::env::var("GPU_PIC").is_ok() {
+                println!("--- mode {} ---", mode);
+                for y in 0..20 {
+                    let mut line = String::new();
+                    for x in 0..t.w {
+                        line.push(t.cells[y * t.w + x].ch as char);
+                    }
+                    println!("{}", line);
+                }
+            }
+        }
         let mut s = term::shaderview::ShaderView::new(1);
-        let mut t = Term::new(80, 24);
-        s.draw(&mut t);
-        assert!(t.cells.iter().any(|c| c.ch != b' '), "шейдер должен что-то нарисовать");
         assert!(s.key(&Key::Char(b'2')));
-        assert!(s.key(&Key::Char(b'3')));
+        assert!(s.key(&Key::Char(b'4')));
+        assert!(s.key(&Key::Char(b'5')));
         assert!(!s.key(&Key::Char(b'q')));
     }
 

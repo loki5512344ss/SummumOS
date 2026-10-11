@@ -335,7 +335,7 @@ impl Shell {
                 term.write_str("help -- this text\n");
                 term.write_str("hello -- Hello, World! on the NAND CPU\n");
                 term.write_str("gpu -- Vulkan compute on the video card (RX included)\n");
-                term.write_str("shader [mandelbrot|plasma|julia] -- 2D shader on the GPU\n");
+                term.write_str("shader [plasma|sun|pyramid|lattice|stars] -- GPU shaders\n");
                 term.write_str("3d -- view a 3D object (cube/pyramid/octa/torus) on the GPU\n");
                 term.write_str("play [file.bav] -- Bad Apple: stop/play/seek/progress\n");
                 term.write_str("clear -- clear the screen\n");
@@ -343,11 +343,14 @@ impl Shell {
             }
             "clear" => term.clear(),
             "shader" => {
-                let arg = cmd.split_whitespace().nth(1).unwrap_or("mandelbrot");
+                let arg = cmd.split_whitespace().nth(1).unwrap_or("sun");
                 let mode = match arg {
-                    "plasma" => 1,
-                    "julia" => 2,
-                    _ => 0,
+                    "plasma" => 0,
+                    "sun" => 1,
+                    "pyramid" => 2,
+                    "lattice" => 3,
+                    "stars" => 4,
+                    _ => 1,
                 };
                 self.mode = Mode::Shader(ShaderView::new(mode));
                 term.clear();
