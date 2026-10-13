@@ -29,6 +29,7 @@ pub enum Action {
     SeekForwardFast,
     NextTrack,
     Loop,
+    Smooth,
     Quit,
     Unknown,
 }
@@ -88,6 +89,7 @@ impl Controls {
                 "seek_forward_fast" => Action::SeekForwardFast,
                 "next_track" => Action::NextTrack,
                 "loop" => Action::Loop,
+                "smooth" => Action::Smooth,
                 "quit" => Action::Quit,
                 _ => Action::Unknown,
             };
@@ -153,6 +155,7 @@ impl Controls {
             Action::SeekForwardFast => "seek +60s",
             Action::NextTrack => "next video",
             Action::Loop => "auto repeat",
+            Action::Smooth => "smooth frames",
             Action::Quit => "quit",
             Action::Unknown => "",
         }
@@ -206,6 +209,7 @@ pub struct Player {
     pending_fit: Option<(usize, usize)>,
     pending_at: Option<Instant>,
     loop_auto: bool,
+    smooth: bool,
 }
 
 impl Player {
@@ -320,6 +324,7 @@ impl Player {
             pending_fit: None,
             pending_at: None,
             loop_auto: false,
+            smooth: true,
         })
     }
 
@@ -383,6 +388,7 @@ impl Player {
             p.pcm = std::mem::take(&mut self.pcm);
             p.quality = self.quality;
             p.loop_auto = self.loop_auto;
+            p.smooth = self.smooth;
             *self = p;
         }
     }
@@ -409,6 +415,7 @@ impl Player {
             p.volume = self.volume;
             p.muted = self.muted;
             p.loop_auto = self.loop_auto;
+            p.smooth = self.smooth;
             *self = p;
             self.open_audio();
         }
@@ -547,6 +554,7 @@ impl Player {
                 p.pcm = std::mem::take(&mut self.pcm);
                 p.quality = self.quality;
                 p.loop_auto = self.loop_auto;
+                p.smooth = self.smooth;
                 *self = p;
             }
         }
@@ -562,9 +570,24 @@ impl Player {
         let avail = term.h.saturating_sub(5);
         let y0 = if avail > self.h { (avail - self.h) / 2 } else { 0 };
         let cells = &self.frames[self.frame];
+        // Плавность: исходник 15 fps, но рисуем чаще. Между текущим и следующим
+        // кадром подмешиваем яркость символа, чтобы переход не был рывком.
+        let phase = if self.smooth && self.playing && self.frame + 1 < self.total() {
+            (self.acc * self.fps as f64).min(1.0) as f32
+        } else {
+            0.0
+        };
+        let next_cells = if phase > 0.001 && self.frame + 1 < self.total() {
+            Some(&self.frames[self.frame + 1])
+        } else {
+            None
+        };
         for y in 0..self.h {
             for x in 0..self.w {
-                let ch = cells[y * self.w + x];
+                let mut ch = cells[y * self.w + x];
+                if let Some(next) = next_cells {
+                    ch = blend_chars(ch, next[y * self.w + x], phase);
+                }
                 let fg = match ch {
                     b' ' => 8,
                     b'.' | b':' => 8,
@@ -594,7 +617,8 @@ impl Player {
         let vol = if self.muted { format!("{} MUTE", snd) } else { format!("{} vol {}%", snd, self.volume as usize * 10) };
         let base = term.h - 5;
         let lp = if self.loop_auto { " LOOP" } else { "" };
-        let head = format!("{}  {}  {:02}:{:02} / {:02}:{:02}  frame {}/{}  {}x{}  {}{}", state, self.name, sec / 60, sec % 60, all / 60, all % 60, self.frame + 1, n, self.w, self.h, vol, lp);
+        let sm = if self.smooth { " smooth" } else { "" };
+        let head = format!("{}  {}  {:02}:{:02} / {:02}:{:02}  frame {}/{}  {}x{}  {}{}{}", state, self.name, sec / 60, sec % 60, all / 60, all % 60, self.frame + 1, n, self.w, self.h, vol, lp, sm);
         term.put_str(1, base, &head, 15, 0);
 
         let width = term.w - 12;
@@ -662,6 +686,7 @@ impl Player {
             Action::SeekForwardFast => self.seek(self.fps as i64 * 60),
             Action::NextTrack => self.next_track(),
             Action::Loop => self.loop_auto = !self.loop_auto,
+            Action::Smooth => self.smooth = !self.smooth,
             Action::Unknown => {}
         }
         true
@@ -673,5 +698,34 @@ impl Drop for Player {
         if let Some(ref mut b) = self.audio {
             b.finish();
         }
+    }
+}
+
+const SMOOTH_RAMP: &'static [u8] = b" .:-=+*#%@";
+
+fn smooth_index(ch: u8) -> Option<usize> {
+    for i in 0..SMOOTH_RAMP.len() {
+        if SMOOTH_RAMP[i] == ch {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Промежуточный символ между двумя кадрами: яркость едет, а не скачет.
+pub fn blend_chars(a: u8, b: u8, phase: f32) -> u8 {
+    if a == b || phase <= 0.0 {
+        return a;
+    }
+    match (smooth_index(a), smooth_index(b)) {
+        (Some(ia), Some(ib)) => {
+            let v = ia as f32 + (ib as f32 - ia as f32) * phase;
+            let mut idx = (v + 0.5) as usize;
+            if idx >= SMOOTH_RAMP.len() {
+                idx = SMOOTH_RAMP.len() - 1;
+            }
+            SMOOTH_RAMP[idx]
+        }
+        _ => if phase >= 0.5 { b } else { a },
     }
 }

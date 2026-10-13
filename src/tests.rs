@@ -284,9 +284,18 @@ mod term_tests {
         assert_eq!(c.action(&Key::Char(b'q')), Action::Quit);
         assert_eq!(c.action(&Key::Char(b'a')), Action::AudioQuality);
         assert_eq!(c.action(&Key::Char(b'l')), Action::Loop);
+        assert_eq!(c.action(&Key::Char(b'i')), Action::Smooth);
         assert_eq!(c.action(&Key::Char(b'n')), Action::NextTrack);
         assert_eq!(c.action(&Key::PageDown), Action::SeekForwardFast);
         assert_eq!(c.action(&Key::PageUp), Action::SeekBackFast);
+    }
+
+    #[test]
+    fn smooth_blend_goes_through_middle_char() {
+        assert_eq!(::term::player::blend_chars(b' ', b'@', 0.0), b' ');
+        assert_eq!(::term::player::blend_chars(b' ', b'@', 1.0), b'@');
+        let mid = ::term::player::blend_chars(b' ', b'@', 0.5);
+        assert!(mid != b' ' && mid != b'@', "середина должна быть промежуточной");
     }
 
     #[test]

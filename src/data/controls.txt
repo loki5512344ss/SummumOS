@@ -20,3 +20,4 @@ pageup seek_back_fast   # перемотка назад на 60 секунд
 pagedown seek_forward_fast # перемотка вперёд на 60 секунд (пропустить дальше)
 n next_track         # следующее видео: Bad Apple -> Rickroll -> Bad Apple
 l loop               # авто-повтор: когда видео кончится, начать сначала
+i smooth             # плавные кадры: подмешивание между 15 fps кадрами

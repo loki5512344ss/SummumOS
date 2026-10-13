@@ -1,15 +1,20 @@
 // ===========================================================================
 // audio: вывод сырого PCM. Сначала pw-cat (с --raw, без него он ищет WAV и
-// падает), потом paplay, потом честный out.wav. Чертёж №20.
+// падает), потом paplay, потом честный out.wav. Запись в пайп идёт в отдельном
+// потоке: если звуковое устройство зависло, плеер не должен вставать вместе с ним.
+// Чертёж №20.
 // ===========================================================================
 use std::io::Write;
 use std::process::Child;
 use std::process::ChildStdin;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::mpsc::sync_channel;
+use std::sync::mpsc::SyncSender;
+use std::thread::JoinHandle;
 
 enum Sink {
-    Pipe(Child, ChildStdin),
+    Pipe(SyncSender<Vec<u8>>, JoinHandle<()>),
     Wav(Vec<u8>),
 }
 
@@ -20,6 +25,24 @@ pub struct AudioOut {
 }
 
 impl AudioOut {
+    fn from_child(mut child: Child, rate: u32) -> Option<AudioOut> {
+        let stdin = child.stdin.take()?;
+        // 8 чанков -- примерно полсекунды. Если устройство не успевает,
+        // лишнее выбрасываем, но видео и ввод продолжают жить.
+        let (tx, rx) = sync_channel::<Vec<u8>>(8);
+        let handle = std::thread::spawn(move || {
+            let mut out: ChildStdin = stdin;
+            for chunk in rx {
+                if out.write_all(&chunk).is_err() {
+                    break;
+                }
+            }
+            drop(out);
+            let _ = child.wait();
+        });
+        Some(AudioOut { sink: Sink::Pipe(tx, handle), rate: rate, finished: false })
+    }
+
     pub fn open(rate: u32) -> AudioOut {
         let rs = format!("{}", rate);
         let pw = Command::new("pw-cat")
@@ -38,9 +61,9 @@ impl AudioOut {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
-        if let Ok(mut child) = pw {
-            if let Some(stdin) = child.stdin.take() {
-                return AudioOut { sink: Sink::Pipe(child, stdin), rate: rate, finished: false };
+        if let Ok(child) = pw {
+            if let Some(a) = AudioOut::from_child(child, rate) {
+                return a;
             }
         }
         let rate_arg = format!("--rate={}", rate);
@@ -50,9 +73,9 @@ impl AudioOut {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
-        if let Ok(mut child) = pa {
-            if let Some(stdin) = child.stdin.take() {
-                return AudioOut { sink: Sink::Pipe(child, stdin), rate: rate, finished: false };
+        if let Ok(child) = pa {
+            if let Some(a) = AudioOut::from_child(child, rate) {
+                return a;
             }
         }
         AudioOut { sink: Sink::Wav(Vec::new()), rate: rate, finished: false }
@@ -60,8 +83,8 @@ impl AudioOut {
 
     pub fn write(&mut self, data: &[u8]) {
         match self.sink {
-            Sink::Pipe(_, ref mut stdin) => {
-                let _ = stdin.write_all(data);
+            Sink::Pipe(ref tx, _) => {
+                let _ = tx.try_send(data.to_vec());
             }
             Sink::Wav(ref mut v) => v.extend_from_slice(data),
         }
@@ -74,9 +97,9 @@ impl AudioOut {
         self.finished = true;
         let sink = std::mem::replace(&mut self.sink, Sink::Wav(Vec::new()));
         match sink {
-            Sink::Pipe(mut child, stdin) => {
-                drop(stdin);
-                let _ = child.wait();
+            Sink::Pipe(tx, handle) => {
+                drop(tx);
+                let _ = handle.join();
             }
             Sink::Wav(v) => {
                 let mut f = match std::fs::File::create("out.wav") {
