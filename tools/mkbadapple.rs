@@ -1,7 +1,9 @@
 // mkbadapple: собирает несколько размеров Bad Apple в один src/data/badapple.rs.
 // Запуск: mkbadapple out.rs sound.snd 24x9.asc 32x12.asc ...
-// Внутри: BAV2 (RLE + 10 байт звука на кадр), затем base64 в строки Rust.
+// Внутри: BAV3 (RLE + 10 байт звука на кадр), затем base64 в строки Rust.
 // В начале файла -- индекс: с какой строки начинается каждый размер.
+// Цветное видео (BAV4, fg/bg на клетку) собирает отдельный tools/mkcolorvideo.rs,
+// этот инструмент остался для старых чёрно-белых роликов.
 use std::env;
 use std::fs::File;
 use std::io::Read;
@@ -47,9 +49,16 @@ fn pack_asc(text: &str, snd: &[u8]) -> Result<(Vec<u8>, usize, usize, usize, usi
     let h: usize = f[3].parse().map_err(|_| "высота".to_string())?;
     let fps: usize = f[4].parse().map_err(|_| "fps".to_string())?;
     let n: usize = f[5].parse().map_err(|_| "кадры".to_string())?;
-    let mut out: Vec<u8> = vec![b'B', b'A', b'V', b'2', w as u8, h as u8, fps as u8, 0];
+    let mut out: Vec<u8> = vec![
+        b'B', b'A', b'V', b'3',
+        (w & 0xff) as u8, (w >> 8) as u8,
+        (h & 0xff) as u8, (h >> 8) as u8,
+        fps as u8, 0,
+    ];
     out.push((n & 0xff) as u8);
-    out.push((n >> 8) as u8);
+    out.push(((n >> 8) & 0xff) as u8);
+    out.push(((n >> 16) & 0xff) as u8);
+    out.push(((n >> 24) & 0xff) as u8);
     for fr in 0..n {
         let mut cells: Vec<u8> = Vec::with_capacity(w * h);
         for _ in 0..h {
@@ -133,7 +142,7 @@ fn main() {
     prefix.push_str("// ===========================================================================\n");
     prefix.push_str("// Видео в нескольких размерах. Файл собирается\n");
     prefix.push_str("// tools/mkbadapple.rs из mp4 и звука; руками не править.\n");
-    prefix.push_str("// Внутри каждого размера -- BAV2, закодированный base64.\n");
+    prefix.push_str("// Внутри каждого размера -- BAV3, закодированный base64.\n");
     prefix.push_str("// ===========================================================================\n");
     let name = if out_path.contains("rickroll") { "Rickroll" } else { "Bad Apple" };
     prefix.push_str("use ::data::video::Version;\n\n");

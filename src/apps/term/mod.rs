@@ -4,6 +4,7 @@
 // Внутри живёт шелл и мини-плеер Bad Apple.
 // ===========================================================================
 pub mod audio;
+pub mod doom;
 pub mod font;
 pub mod model;
 pub mod player;
@@ -161,9 +162,51 @@ impl Term {
 }
 
 /// Раскладывает сетку в пиксели. Шрифт 8x16, биты в строке слева направо.
+/// Строки делятся между несколькими потоками: это главный горячий цикл.
 pub fn render(term: &Term, px: &mut [u32]) {
     let stride = term.w * 8;
-    for y in 0..term.h {
+    if stride == 0 || term.h == 0 || px.len() < stride * term.h * 16 {
+        return;
+    }
+    let threads = render_threads();
+    if threads <= 1 || term.h < 8 {
+        render_rows(term, px, 0, term.h);
+        return;
+    }
+    let rows_per = (term.h + threads - 1) / threads;
+    let chunk = rows_per * 16 * stride;
+    let mut y = 0usize;
+    std::thread::scope(|s| {
+        for part in px.chunks_mut(chunk) {
+            let rows = part.len() / (16 * stride);
+            let term_ref = term;
+            let y0 = y;
+            s.spawn(move || render_rows(term_ref, part, y0, rows));
+            y += rows;
+        }
+    });
+}
+
+fn render_threads() -> usize {
+    if let Ok(v) = std::env::var("SUMMUM_THREADS") {
+        if let Ok(n) = v.parse::<usize>() {
+            if n >= 1 && n <= 32 {
+                return n;
+            }
+        }
+    }
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    if cores > 4 { 4 } else { cores }
+}
+
+fn render_rows(term: &Term, px: &mut [u32], y0: usize, rows: usize) {
+    let stride = term.w * 8;
+    for ly in 0..rows {
+        let y = y0 + ly;
+        if y >= term.h {
+            break;
+        }
+        let base_row = ly * 16 * stride;
         for x in 0..term.w {
             let cell = term.cells[y * term.w + x];
             let fg = COLORS[(cell.fg & 15) as usize];
@@ -171,7 +214,7 @@ pub fn render(term: &Term, px: &mut [u32]) {
             let glyph = &font::FONT8X16[cell.ch as usize];
             for row in 0..16 {
                 let bits = glyph[row];
-                let base = (y * 16 + row) * stride + x * 8;
+                let base = base_row + row * stride + x * 8;
                 for col in 0..8 {
                     let on = bits & (0x80 >> col) != 0;
                     px[base + col] = if on { fg } else { bg };
@@ -186,6 +229,7 @@ enum Mode {
     Player(player::Player),
     Model(Model3d),
     Shader(ShaderView),
+    Doom(doom::Doom),
 }
 
 struct Shell {
@@ -202,8 +246,9 @@ impl Shell {
         term.clear();
         term.put_str(2, 1, "SummumOS // own terminal, not yours", 11, 0);
         term.put_str(2, 2, "a window, a font, a machine from NAND", 8, 0);
-        term.put_str(2, 4, "commands: help  hello  play [file.bav]  clear  quit", 7, 0);
+        term.put_str(2, 4, "commands: help  hello  doom  color  play [file.bav]  clear  quit", 7, 0);
         term.put_str(2, 5, "player:   space play/pause, left/right seek, s stop, home restart, q quit", 7, 0);
+        term.put_str(2, 6, "doom:     W/S move, A/D strafe, left/right turn, space shoot, E use, q shell", 7, 0);
         term.put_str(2, 7, "summum> ", 10, 0);
         term.cx = 8;
         term.cy = 7;
@@ -261,6 +306,19 @@ impl Shell {
                     self.banner(term);
                 }
             }
+            Mode::Doom(_) => {
+                let quit = {
+                    if let Mode::Doom(ref mut d) = self.mode {
+                        !d.key(&k)
+                    } else {
+                        false
+                    }
+                };
+                if quit {
+                    self.mode = Mode::Shell;
+                    self.banner(term);
+                }
+            }
             Mode::Shell => match k {
                 Key::Char(b) => {
                     if b >= 32 && b < 127 && term.cx < term.w - 1 {
@@ -299,12 +357,14 @@ impl Shell {
             Mode::Player(ref mut p) => p.tick(dt),
             Mode::Model(ref mut m) => m.tick(dt),
             Mode::Shader(ref mut s) => s.tick(dt),
+            Mode::Doom(ref mut d) => d.tick(dt),
             Mode::Shell => {}
         }
         match self.mode {
             Mode::Player(ref p) => p.draw(term),
             Mode::Model(ref mut m) => m.draw(term),
             Mode::Shader(ref mut s) => s.draw(term),
+            Mode::Doom(ref mut d) => d.draw(term),
             Mode::Shell => {}
         }
     }
@@ -315,6 +375,7 @@ impl Shell {
             Mode::Player(ref mut p) => p.request_fit(w, h),
             Mode::Model(_) => {}
             Mode::Shader(_) => {}
+            Mode::Doom(ref mut d) => d.resize(w, h),
             Mode::Shell => {
                 if term.cy >= h {
                     term.cy = h - 1;
@@ -334,10 +395,12 @@ impl Shell {
             "help" => {
                 term.write_str("help -- this text\n");
                 term.write_str("hello -- Hello, World! on the NAND CPU\n");
+                term.write_str("doom -- a playable raycaster, not a WAD parser\n");
                 term.write_str("gpu -- Vulkan compute on the video card (RX included)\n");
                 term.write_str("shader [plasma|sun|pyramid|lattice|stars] -- GPU shaders\n");
                 term.write_str("3d -- view a 3D object (cube/pyramid/octa/torus) on the GPU\n");
                 term.write_str("play [file.bav] -- Bad Apple: stop/play/seek/progress\n");
+                term.write_str("color -- a short colored ASCII test pattern\n");
                 term.write_str("clear -- clear the screen\n");
                 term.write_str("quit -- leave this terminal\n");
             }
@@ -358,6 +421,24 @@ impl Shell {
             "3d" | "cube" | "model" => {
                 self.mode = Mode::Model(Model3d::new());
                 term.clear();
+            }
+            "doom" => {
+                self.mode = Mode::Doom(doom::Doom::new());
+                term.clear();
+            }
+            "color" | "colors" => {
+                match player::Player::from_file("assets/color.bav", term.w, term.h) {
+                    Ok(p) => {
+                        // Цветному тесту звук не нужен: open_audio не зовём.
+                        self.mode = Mode::Player(p);
+                        term.clear();
+                    }
+                    Err(e) => {
+                        term.write_str("color: ");
+                        term.write_str(&e);
+                        term.write_str("\n");
+                    }
+                }
             }
             "gpu" => {
                 match ::hw::gpu::benchmark() {

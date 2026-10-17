@@ -1,8 +1,10 @@
 // ===========================================================================
-// player: мини-плеер Bad Apple для своего терминала. Формат BAV2 читается
-// на хосте, версия выбирается по размеру окна (10 размеров в data/badapple.rs).
+// player: мини-плеер Bad Apple для своего терминала. Форматы BAV2/BAV3/BAV4
+// читаются на хосте, версия выбирается по размеру окна (14 размеров в
+// data/badapple.rs). BAV4 умеет хранить цвет на каждую клетку: ch, fg, bg.
 // Кнопки берутся из data/controls.txt, а не из кода.
 // Звук: настоящий PCM из видео в пяти качествах (data/audio.rs).
+// Не понимаешь, как устроен цветной кадр -- смотри чертёж №19.
 // ===========================================================================
 use super::Term;
 use super::sdl::Key;
@@ -10,6 +12,128 @@ use super::audio::AudioOut;
 use std::time::Instant;
 
 const CONTROLS_TXT: &'static str = include_str!("../../data/controls.txt");
+
+/// Одна клетка видео. fg/bg -- индексы палитры term::COLORS (0..15).
+/// У BAV2/BAV3 цвета нет, поэтому плеер синтезирует его по символу, как раньше.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoCell {
+    pub ch: u8,
+    pub fg: u8,
+    pub bg: u8,
+}
+
+/// Бит 0 в байте flags заголовка BAV4: в кадре лежит цвет.
+const BAV4_FLAG_COLOR: u8 = 1;
+
+/// Большое цветное видео не грузим в кадры целиком: держим весь BAV4 в
+/// памяти и раскодируем один кадр по требованию. Иначе длинный ролик
+/// превращается в несколько гигабайт Vec<Vec<...>>.
+struct ExternalVideo {
+    data: Vec<u8>,
+    offsets: Vec<u64>,
+    w: usize,
+    h: usize,
+    fps: usize,
+    color: bool,
+}
+
+impl ExternalVideo {
+    fn open(path: &str) -> Result<ExternalVideo, String> {
+        let data = match std::fs::read(path) {
+            Ok(v) => v,
+            Err(e) => return Err(format!("{}: {}", path, e)),
+        };
+        if data.len() < 14 || &data[0..4] != b"BAV4" {
+            return Err(format!("{}: not a BAV4 file", path));
+        }
+        let w = data[4] as usize | ((data[5] as usize) << 8);
+        let h = data[6] as usize | ((data[7] as usize) << 8);
+        let fps = data[8] as usize;
+        let color = data[9] & BAV4_FLAG_COLOR != 0;
+        let n = data[10] as usize
+            | ((data[11] as usize) << 8)
+            | ((data[12] as usize) << 16)
+            | ((data[13] as usize) << 24);
+        if w == 0 || h == 0 || n == 0 {
+            return Err(format!("{}: bad BAV4 header", path));
+        }
+        let stride = if color { 4 } else { 2 };
+        let mut offsets = Vec::with_capacity(n);
+        let mut pos = 14usize;
+        for _ in 0..n {
+            offsets.push(pos as u64);
+            let mut cells = 0usize;
+            while cells < w * h {
+                if pos + stride > data.len() {
+                    return Err(format!("{}: frame ended early", path));
+                }
+                let run = data[pos] as usize;
+                if run == 0 {
+                    return Err(format!("{}: zero run", path));
+                }
+                cells += run;
+                pos += stride;
+            }
+            if pos + 10 > data.len() {
+                return Err(format!("{}: frame has no sound bytes", path));
+            }
+            pos += 10;
+        }
+        Ok(ExternalVideo { data: data, offsets: offsets, w: w, h: h, fps: fps, color: color })
+    }
+
+    fn frame(&self, idx: usize) -> Vec<VideoCell> {
+        let mut cells: Vec<VideoCell> = Vec::with_capacity(self.w * self.h);
+        let mut pos = self.offsets[idx] as usize;
+        let stride = if self.color { 4 } else { 2 };
+        while cells.len() < self.w * self.h {
+            let run = self.data[pos] as usize;
+            let ch = self.data[pos + 1];
+            let (fg, bg) = if self.color {
+                (self.data[pos + 2] & 15, self.data[pos + 3] & 15)
+            } else {
+                (legacy_fg(ch), 0)
+            };
+            pos += stride;
+            let cell = VideoCell { ch: ch, fg: fg, bg: bg };
+            let take = if cells.len() + run > self.w * self.h { self.w * self.h - cells.len() } else { run };
+            for _ in 0..take {
+                cells.push(cell);
+            }
+        }
+        cells
+    }
+}
+
+/// Один внешний звук: 256 кбит/с лежит отдельным текстом, поэтому строку и
+/// Quality приходится утекать в 'static. Это калово, зато не надо тащить
+/// сотни мегабайт в исходники и ждать компилятор.
+fn external_quality(path: &str) -> Result<&'static [::data::audio::Quality], String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(v) => v,
+        Err(e) => return Err(format!("{}: {}", path, e)),
+    };
+    let text: &'static str = Box::leak(text.into_boxed_str());
+    let one = vec![::data::audio::Quality {
+        name: "256kbps max",
+        rate: 64000,
+        kbps: 256,
+        data: text,
+    }];
+    Ok(Box::leak(one.into_boxed_slice()))
+}
+
+/// Старая логика цвета: серый для точек и пробелов, белый для плотных.
+fn legacy_fg(ch: u8) -> u8 {
+    match ch {
+        b' ' => 8,
+        b'.' | b':' => 8,
+        b'-' | b'=' => 7,
+        b'+' | b'*' => 7,
+        b'#' => 15,
+        _ => 15,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -185,7 +309,8 @@ impl Controls {
 }
 
 pub struct Player {
-    frames: Vec<Vec<u8>>,
+    frames: Vec<Vec<VideoCell>>,
+    external: Option<ExternalVideo>,
     fps: usize,
     w: usize,
     h: usize,
@@ -262,31 +387,108 @@ impl Player {
         Ok(p)
     }
 
+    pub fn from_external(video: &str, sound: &str, view_w: usize, view_h: usize, name: String) -> Result<Player, String> {
+        let ext = try!(ExternalVideo::open(video));
+        let quals = try!(external_quality(sound));
+        let w = ext.w;
+        let h = ext.h;
+        let fps = if ext.fps == 0 { 30 } else { ext.fps };
+        Ok(Player {
+            frames: Vec::new(),
+            external: Some(ext),
+            fps: fps,
+            w: w,
+            h: h,
+            frame: 0,
+            playing: true,
+            acc: 0.0,
+            name: name,
+            track: 2,
+            versions: &[],
+            qualities: quals,
+            audio: None,
+            audio_pos: 0,
+            pcm: Vec::new(),
+            quality: 0,
+            volume: 5,
+            muted: false,
+            controls: Controls::from_text(CONTROLS_TXT),
+            version: None,
+            view_w: view_w,
+            view_h: view_h,
+            pending_fit: None,
+            pending_at: None,
+            loop_auto: true,
+            smooth: true,
+        })
+    }
+
     pub fn from_bav(data: &[u8], name: String) -> Result<Player, String> {
-        if data.len() < 10 || &data[0..4] != b"BAV2" {
-            return Err("not a BAV2 file".to_string());
+        if data.len() < 10 {
+            return Err("too short".to_string());
         }
-        let w = data[4] as usize;
-        let h = data[5] as usize;
-        let fps = data[6] as usize;
-        let n = data[8] as usize | ((data[9] as usize) << 8);
-        let mut pos = 10;
-        let mut frames: Vec<Vec<u8>> = Vec::with_capacity(n);
+        // BAV4: 14-байтный заголовок, flags в байте 9. Старые BAV2/BAV3
+        // остаются как были, у них цвет синтезируется по символу.
+        let (w, h, fps, n, mut pos, color) = if &data[0..4] == b"BAV4" {
+            if data.len() < 14 {
+                return Err("too short for BAV4".to_string());
+            }
+            let w = data[4] as usize | ((data[5] as usize) << 8);
+            let h = data[6] as usize | ((data[7] as usize) << 8);
+            let fps = data[8] as usize;
+            let color = data[9] & BAV4_FLAG_COLOR != 0;
+            let n = data[10] as usize
+                | ((data[11] as usize) << 8)
+                | ((data[12] as usize) << 16)
+                | ((data[13] as usize) << 24);
+            (w, h, fps, n, 14, color)
+        } else if &data[0..4] == b"BAV3" {
+            if data.len() < 14 {
+                return Err("too short for BAV3".to_string());
+            }
+            let w = data[4] as usize | ((data[5] as usize) << 8);
+            let h = data[6] as usize | ((data[7] as usize) << 8);
+            let fps = data[8] as usize;
+            let n = data[10] as usize
+                | ((data[11] as usize) << 8)
+                | ((data[12] as usize) << 16)
+                | ((data[13] as usize) << 24);
+            (w, h, fps, n, 14, false)
+        } else if &data[0..4] == b"BAV2" {
+            let w = data[4] as usize;
+            let h = data[5] as usize;
+            let fps = data[6] as usize;
+            let n = data[8] as usize | ((data[9] as usize) << 8);
+            (w, h, fps, n, 10, false)
+        } else {
+            return Err("not a BAV2/BAV3/BAV4 file".to_string());
+        };
+        if w == 0 || h == 0 {
+            return Err("bad video size".to_string());
+        }
+        let mut frames: Vec<Vec<VideoCell>> = Vec::with_capacity(n);
         for _ in 0..n {
-            let mut cells: Vec<u8> = Vec::with_capacity(w * h);
+            let mut cells: Vec<VideoCell> = Vec::with_capacity(w * h);
             while cells.len() < w * h {
-                if pos + 2 > data.len() {
+                let stride = if color { 4 } else { 2 };
+                if pos + stride > data.len() {
                     return Err("video ended before frames did".to_string());
                 }
                 let run = data[pos] as usize;
                 let ch = data[pos + 1];
-                pos += 2;
+                let (fg, bg) = if color {
+                    (data[pos + 2] & 15, data[pos + 3] & 15)
+                } else {
+                    (legacy_fg(ch), 0)
+                };
+                pos += stride;
                 if run == 0 {
                     return Err("zero run length".to_string());
                 }
+                let cell = VideoCell { ch: ch, fg: fg, bg: bg };
                 for _ in 0..run {
                     if cells.len() < w * h {
-                        cells.push(ch);
+                        cells.push(cell);
                     }
                 }
             }
@@ -301,6 +503,7 @@ impl Player {
         }
         Ok(Player {
             frames: frames,
+            external: None,
             fps: if fps == 0 { 15 } else { fps },
             w: w,
             h: h,
@@ -323,7 +526,8 @@ impl Player {
             view_h: h + 5,
             pending_fit: None,
             pending_at: None,
-            loop_auto: false,
+            // По умолчанию видео зациклено: пусть Bad Apple сам начинает сначала.
+            loop_auto: true,
             smooth: true,
         })
     }
@@ -337,11 +541,27 @@ impl Player {
     }
 
     pub fn total(&self) -> usize {
-        self.frames.len()
+        match self.external.as_ref() {
+            Some(e) => e.offsets.len(),
+            None => self.frames.len(),
+        }
+    }
+
+    fn cells_at(&self, idx: usize) -> Vec<VideoCell> {
+        match self.external.as_ref() {
+            Some(e) => {
+                if idx < e.offsets.len() { e.frame(idx) } else { Vec::new() }
+            }
+            None => self.frames[idx].clone(),
+        }
+    }
+
+    pub fn size_for_test(&self) -> (usize, usize) {
+        (self.w, self.h)
     }
 
     pub fn total_for_test(&self) -> usize {
-        self.frames.len()
+        self.total()
     }
 
     pub fn version_for_test(&self) -> Option<usize> {
@@ -364,16 +584,28 @@ impl Player {
         self.track
     }
 
+    /// Клетка текущего кадра: ch, fg, bg. Для тестов и отладки конвертера.
+    pub fn cell_for_test(&self, x: usize, y: usize) -> Option<(u8, u8, u8)> {
+        let cells = self.cells_at(self.frame);
+        cells.get(y * self.w + x).map(|c| (c.ch, c.fg, c.bg))
+    }
+
     /// Просит подобрать размер после изменения окна (с задержкой, чтобы не
     /// перекодировать видео на каждый пиксель при перетаскивании).
     pub fn request_fit(&mut self, view_w: usize, view_h: usize) {
         self.view_w = view_w;
         self.view_h = view_h;
+        if self.external.is_some() {
+            return;
+        }
         self.pending_fit = Some((view_w, view_h));
         self.pending_at = Some(Instant::now());
     }
 
     fn fit_now(&mut self, view_w: usize, view_h: usize) {
+        if self.external.is_some() {
+            return;
+        }
         let idx = ::data::video::best_for(self.versions, view_w, view_h.saturating_sub(5));
         if self.version == Some(idx) {
             return;
@@ -524,6 +756,9 @@ impl Player {
     }
 
     fn change_size(&mut self, up: bool) {
+        if self.external.is_some() {
+            return;
+        }
         let idx = match self.version {
             Some(i) => i,
             None => return,
@@ -566,10 +801,18 @@ impl Player {
             c.fg = 7;
             c.bg = 0;
         }
-        let x0 = (term.w - self.w) / 2;
-        let avail = term.h.saturating_sub(5);
-        let y0 = if avail > self.h { (avail - self.h) / 2 } else { 0 };
-        let cells = &self.frames[self.frame];
+        let avail_w = term.w;
+        let avail_h = term.h.saturating_sub(5);
+        if avail_w == 0 || avail_h == 0 {
+            return;
+        }
+        // Если окно меньше ролика, ужимаем по клеткам, а не
+        // уходим в underflow и не рисуем вообще ничего.
+        let vw = if self.w < avail_w { self.w } else { avail_w };
+        let vh = if self.h < avail_h { self.h } else { avail_h };
+        let x0 = if avail_w > vw { (avail_w - vw) / 2 } else { 0 };
+        let y0 = if avail_h > vh { (avail_h - vh) / 2 } else { 0 };
+        let cells = self.cells_at(self.frame);
         // Плавность: исходник 15 fps, но рисуем чаще. Между текущим и следующим
         // кадром подмешиваем яркость символа, чтобы переход не был рывком.
         let phase = if self.smooth && self.playing && self.frame + 1 < self.total() {
@@ -578,27 +821,22 @@ impl Player {
             0.0
         };
         let next_cells = if phase > 0.001 && self.frame + 1 < self.total() {
-            Some(&self.frames[self.frame + 1])
+            Some(self.cells_at(self.frame + 1))
         } else {
             None
         };
-        for y in 0..self.h {
-            for x in 0..self.w {
-                let mut ch = cells[y * self.w + x];
-                if let Some(next) = next_cells {
-                    ch = blend_chars(ch, next[y * self.w + x], phase);
+        for y in 0..vh {
+            let sy = y * self.h / vh;
+            for x in 0..vw {
+                let sx = x * self.w / vw;
+                let cell = cells[sy * self.w + sx];
+                let mut ch = cell.ch;
+                if let Some(ref next) = next_cells {
+                    ch = blend_chars(ch, next[sy * self.w + sx].ch, phase);
                 }
-                let fg = match ch {
-                    b' ' => 8,
-                    b'.' | b':' => 8,
-                    b'-' | b'=' => 7,
-                    b'+' | b'*' => 7,
-                    b'#' => 15,
-                    _ => 15,
-                };
-                if x0 + x < term.w && y0 + y < term.h {
-                    term.put(x0 + x, y0 + y, ch, fg, 0);
-                }
+                // Цвет берём из текущего кадра, а не угадываем по символу.
+                // Плавно смешиваем только символы, иначе цвета дёргались бы.
+                term.put(x0 + x, y0 + y, ch, cell.fg, cell.bg);
             }
         }
         let n = self.total();
@@ -618,11 +856,11 @@ impl Player {
         let base = term.h - 5;
         let lp = if self.loop_auto { " LOOP" } else { "" };
         let sm = if self.smooth { " smooth" } else { "" };
-        let head = format!("{}  {}  {:02}:{:02} / {:02}:{:02}  frame {}/{}  {}x{}  {}{}{}", state, self.name, sec / 60, sec % 60, all / 60, all % 60, self.frame + 1, n, self.w, self.h, vol, lp, sm);
+        let head = format!("{}  {}  {:02}:{:02} / {:02}:{:02}  frame {}/{}  {}x{} {}fps  {}{}{}", state, self.name, sec / 60, sec % 60, all / 60, all % 60, self.frame + 1, n, self.w, self.h, self.fps, vol, lp, sm);
         term.put_str(1, base, &head, 15, 0);
 
-        let width = term.w - 12;
-        let done = if n > 1 { (self.frame * width) / (n - 1) } else { 0 };
+        let width = term.w.saturating_sub(12);
+        let done = if n > 1 && width > 0 { (self.frame * width) / (n - 1) } else { 0 };
         term.put_str(1, base + 1, "[", 7, 0);
         for i in 0..width {
             let ch = if i < done { b'=' } else { b'-' };

@@ -229,6 +229,113 @@ mod term_tests {
         d
     }
 
+    /// Крошечный BAV4 4x2: две цветные клетки, две серых, четыре пробела.
+    /// На каждом кадре меняется только fg у первой клетки.
+    fn tiny_bav4(frames: usize, color: bool) -> Vec<u8> {
+        let w = 4usize;
+        let h = 2usize;
+        let mut d: Vec<u8> = Vec::new();
+        d.extend_from_slice(b"BAV4");
+        d.push(w as u8);
+        d.push(0);
+        d.push(h as u8);
+        d.push(0);
+        d.push(12);
+        d.push(if color { 1 } else { 0 });
+        d.push((frames & 0xff) as u8);
+        d.push(((frames >> 8) & 0xff) as u8);
+        d.push(((frames >> 16) & 0xff) as u8);
+        d.push(((frames >> 24) & 0xff) as u8);
+        for f in 0..frames {
+            if color {
+                // run, ch, fg, bg
+                d.extend_from_slice(&[2, b'#', 2 + f as u8, 4]);
+                d.extend_from_slice(&[2, b':', 10, 1]);
+                d.extend_from_slice(&[4, b' ', 0, 9]);
+            } else {
+                // старый BAV3-подобный ран: run, ch
+                d.extend_from_slice(&[4, b'#']);
+                d.extend_from_slice(&[4, b' ']);
+            }
+            for _ in 0..10 {
+                d.push(0);
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn bav4_parses_color_cells() {
+        let d = tiny_bav4(2, true);
+        let p = Player::from_bav(&d, "color".to_string()).ok().unwrap();
+        assert_eq!(p.size_for_test(), (4, 2));
+        assert_eq!(p.total_for_test(), 2);
+        assert_eq!(p.cell_for_test(0, 0), Some((b'#', 2, 4)));
+        assert_eq!(p.cell_for_test(2, 0), Some((b':', 10, 1)));
+        assert_eq!(p.cell_for_test(3, 1), Some((b' ', 0, 9)));
+        let mut p = p;
+        p.set_frame_for_test(1);
+        assert_eq!(p.cell_for_test(0, 0), Some((b'#', 3, 4)), "цвет второго кадра должен читаться отдельно");
+    }
+
+    #[test]
+    fn bav4_without_color_flag_keeps_legacy_gray() {
+        let d = tiny_bav4(1, false);
+        let p = Player::from_bav(&d, "gray".to_string()).ok().unwrap();
+        assert_eq!(p.cell_for_test(0, 0), Some((b'#', 15, 0)));
+        assert_eq!(p.cell_for_test(0, 1), Some((b' ', 8, 0)));
+    }
+
+    #[test]
+    fn color_test_asset_loads_and_draws_colors() {
+        let p = Player::from_file("assets/color.bav", 80, 30).ok().unwrap();
+        assert_eq!(p.size_for_test(), (64, 24));
+        assert!(p.total_for_test() > 1);
+        let mut t = Term::new(80, 30);
+        p.draw(&mut t);
+        let colored = t.cells.iter().filter(|c| c.ch != b' ' && c.fg != 0).count();
+        assert!(colored > 0, "цветной тест должен дать цветные клетки");
+    }
+
+    #[test]
+    fn player_draw_uses_color_from_bav4() {
+        let p = Player::from_bav(&tiny_bav4(1, true), "color".to_string()).ok().unwrap();
+        let mut t = Term::new(10, 8);
+        p.draw(&mut t);
+        // 4x2 по центру: x0=(10-4)/2=3, y0=0.
+        assert_eq!((t.cells[3].ch, t.cells[3].fg, t.cells[3].bg), (b'#', 2, 4));
+        assert_eq!((t.cells[5].ch, t.cells[5].fg, t.cells[5].bg), (b':', 10, 1));
+        assert_eq!((t.cells[13].ch, t.cells[13].fg, t.cells[13].bg), (b' ', 0, 9));
+    }
+
+    #[test]
+    fn bav3_parses_wide_video() {
+        let w = 516usize;
+        let h = 50usize;
+        let mut d: Vec<u8> = Vec::new();
+        d.extend_from_slice(b"BAV3");
+        d.extend_from_slice(&[(w & 0xff) as u8, (w >> 8) as u8]);
+        d.extend_from_slice(&[(h & 0xff) as u8, (h >> 8) as u8]);
+        d.push(30);
+        d.push(0);
+        for &b in &[1u8, 0, 0, 0] {
+            d.push(b);
+        }
+        let mut left = w * h;
+        while left > 0 {
+            let run = if left > 255 { 255 } else { left };
+            d.push(run as u8);
+            d.push(b'#');
+            left -= run;
+        }
+        for _ in 0..10 {
+            d.push(0);
+        }
+        let p = Player::from_bav(&d, "wide".to_string()).ok().unwrap();
+        assert_eq!(p.size_for_test(), (w, h));
+        assert_eq!(p.total_for_test(), 1);
+    }
+
     #[test]
     fn bav2_decodes_and_player_controls_work() {
         let p = Player::from_bav(&tiny_bav(30, b'#'), "t".to_string()).ok().unwrap();
@@ -419,10 +526,16 @@ mod term_tests {
         let v = &::badapple::VERSIONS[idx];
         assert!(v.w <= 100 && v.h <= 25);
         let data = ::badapple::decode(v.data);
-        assert_eq!(&data[0..4], b"BAV2");
-        assert_eq!(data[4] as usize, v.w);
-        assert_eq!(data[5] as usize, v.h);
-        assert_eq!(data[8] as usize | ((data[9] as usize) << 8), v.frames);
+        assert_eq!(&data[0..4], b"BAV3");
+        assert_eq!(data[4] as usize | ((data[5] as usize) << 8), v.w);
+        assert_eq!(data[6] as usize | ((data[7] as usize) << 8), v.h);
+        assert_eq!(
+            data[10] as usize
+                | ((data[11] as usize) << 8)
+                | ((data[12] as usize) << 16)
+                | ((data[13] as usize) << 24),
+            v.frames
+        );
     }
 
     #[test]
@@ -468,6 +581,87 @@ mod term_tests {
         p.draw(&mut t);
         assert_eq!(t.cells[18].ch, b'#');
         assert!(t.cells[0].ch == b' ' || t.cells[0].ch == b'#');
+    }
+}
+
+#[cfg(test)]
+mod doom_tests {
+    use term::doom::Doom;
+    use term::doom::DoomState;
+    use term::sdl::Key;
+    use term::Term;
+
+    fn row(t: &Term, y: usize) -> String {
+        let mut s = String::new();
+        for x in 0..t.w {
+            s.push(t.cells[y * t.w + x].ch as char);
+        }
+        s
+    }
+
+    #[test]
+    fn doom_starts_with_a_handmade_map_and_three_monsters() {
+        let d = Doom::new();
+        assert!(d.walls.len() >= 12 && d.walls.len() <= 20, "стен должно быть 12..20, а не {}", d.walls.len());
+        assert_eq!(d.enemies.len(), 3);
+        assert_eq!(d.hp, 100);
+        assert_eq!(d.ammo, 24);
+        assert_eq!(d.kills, 0);
+        assert!(d.state == DoomState::Play);
+    }
+
+    #[test]
+    fn doom_w_moves_the_player() {
+        let mut d = Doom::new();
+        let (x0, y0) = (d.px, d.py);
+        assert!(d.key(&Key::Char(b'w')));
+        let moved = (d.px - x0).abs() + (d.py - y0).abs();
+        assert!(moved > 0.1, "игрок должен был куда-то уехать, а сдвиг {}", moved);
+    }
+
+    #[test]
+    fn doom_wall_stops_the_player() {
+        let mut d = Doom::new();
+        // ставим игрока перед стеной x=3 от y=0 до y=3 и смотрим на восток
+        d.px = 2.0;
+        d.py = 1.5;
+        d.angle = 0.0;
+        for _ in 0..30 {
+            d.key(&Key::Char(b'w'));
+        }
+        assert!(d.px < 3.0, "игрок прошёл сквозь стену: x={}", d.px);
+        assert!(d.px > 2.4, "игрок застрял слишком далеко от стены: x={}", d.px);
+        assert!((d.py - 1.5).abs() < 0.01, "по y ничего не должно было сдвинуться");
+    }
+
+    #[test]
+    fn doom_shot_spends_ammo_and_kills_the_letter() {
+        let mut d = Doom::new();
+        d.enemies[0].x = 2.3;
+        d.enemies[0].y = d.py;
+        d.enemies[0].hp = 2;
+        for i in 1..d.enemies.len() {
+            d.enemies[i].alive = false;
+        }
+        d.angle = 0.0;
+        let ammo = d.ammo;
+        d.key(&Key::Char(b' '));
+        assert_eq!(d.ammo, ammo - 1, "выстрел должен стоить патрон");
+        assert!(!d.enemies[0].alive, "враг с hp=2 должен умереть от одного выстрела");
+        assert_eq!(d.kills, 1);
+    }
+
+    #[test]
+    fn doom_draws_a_frame_and_a_hud() {
+        let mut d = Doom::new();
+        let mut t = Term::new(100, 30);
+        d.draw(&mut t);
+        let lit = t.cells.iter().filter(|c| c.ch != b' ').count();
+        assert!(lit > 500, "рейкастер нарисовал слишком мало: {}", lit);
+        let hud = row(&t, 27);
+        assert!(hud.contains("HP"), "в HUD нет HP: {}", hud);
+        assert!(hud.contains("AMMO"), "в HUD нет AMMO: {}", hud);
+        assert!(hud.contains("KILLS"), "в HUD нет KILLS: {}", hud);
     }
 }
 

@@ -43,6 +43,7 @@ pub fn vse() -> Vec<Lozh> {
         Lozh { mesto: "правило про UART", govorit: "вывод только через UART/видеокарту", delaet: "баннер SummumOS идёт в stderr мимо машины", priznak: "data/banner.txt" },
         Lozh { mesto: "охранники и босс", govorit: "защищают целостность ОС", delaet: "их ожидаемые суммы переписывает tools/seal.rs за одну команду", priznak: "zone_ok" },
         Lozh { mesto: "--mercy", govorit: "отключает кубик и все риски", delaet: "отключает только обзвон, проверка сумм и коды 8/9 остаются", priznak: "mercy" },
+        Lozh { mesto: "doom::open_door", govorit: "открывает дверь перед игроком", delaet: "ничего не делает: двери в игре только нарисованы", priznak: "pub fn open_door" },
     ]
 }
 

@@ -38,7 +38,7 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-pub const SUMMA: u32 = 0x00a0eebc; // СУММА: 0x00a0eebc
+pub const SUMMA: u32 = 0x03768ee8; // СУММА: 0x03768ee8
 
 pub fn summa() -> u32 { check::zone_sum(&files(), 1) }
 

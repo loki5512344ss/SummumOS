@@ -34,6 +34,10 @@ name = "mkbadapple"
 path = "tools/mkbadapple.rs"
 
 [[bin]]
+name = "mkcolorvideo"
+path = "tools/mkcolorvideo.rs"
+
+[[bin]]
 name = "sndcmp"
 path = "tools/sndcmp.rs"
 

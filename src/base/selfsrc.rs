@@ -34,6 +34,7 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../apps/selftest.asm"));
     s.push_str(include_str!("../apps/player.asm"));
     s.push_str(include_str!("../apps/term/mod.rs"));
+    s.push_str(include_str!("../apps/term/doom.rs"));
     s.push_str(include_str!("../apps/term/model.rs"));
     s.push_str(include_str!("../apps/term/shaderview.rs"));
     s.push_str(include_str!("../apps/term/audio.rs"));
@@ -45,13 +46,13 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../junk/prikol.rs"));
     s.push_str(include_str!("../junk/guard.rs"));
     s.push_str(include_str!("../data/mod.rs"));
-    s.push_str(include_str!("../data/badapple.rs"));
+    // Гигантские видео-блобы сюда не тянем: их и так сторожит Толик.
+    // Иначе self_src() собирает 200+ МБ и компилятору становится плохо.
     s.push_str(include_str!("../data/controls.txt"));
     s.push_str(include_str!("../data/audio.rs"));
     s.push_str(include_str!("../data/snd.rs"));
     s.push_str(include_str!("../data/rickroll_audio.rs"));
     s.push_str(include_str!("../data/video.rs"));
-    s.push_str(include_str!("../data/rickroll.rs"));
     s.push_str(include_str!("../data/guard.rs"));
     s.push_str(include_str!("../util/mod.rs"));
     s.push_str(include_str!("../util/hex.rs"));
