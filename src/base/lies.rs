@@ -44,6 +44,8 @@ pub fn vse() -> Vec<Lozh> {
         Lozh { mesto: "охранники и босс", govorit: "защищают целостность ОС", delaet: "их ожидаемые суммы переписывает tools/seal.rs за одну команду", priznak: "zone_ok" },
         Lozh { mesto: "--mercy", govorit: "отключает кубик и все риски", delaet: "отключает только обзвон, проверка сумм и коды 8/9 остаются", priznak: "mercy" },
         Lozh { mesto: "doom::open_door", govorit: "открывает дверь перед игроком", delaet: "ничего не делает: двери в игре только нарисованы", priznak: "pub fn open_door" },
+        Lozh { mesto: "bubble::klass_simvola", govorit: "класс символа по таблицам Unicode", delaet: "смотрит только на ASCII 32..126, руками, через 129 веток match", priznak: "pub fn klass_simvola" },
+        Lozh { mesto: "bubble::kontrolnaya_summa8", govorit: "контрольная сумма восьми байтов", delaet: "считает её дважды копипастой и выбрасывает второй результат", priznak: "pub fn kontrolnaya_summa8" },
     ]
 }
 
