@@ -46,6 +46,7 @@ pub fn vse() -> Vec<Lozh> {
         Lozh { mesto: "doom::open_door", govorit: "открывает дверь перед игроком", delaet: "ничего не делает: двери в игре только нарисованы", priznak: "pub fn open_door" },
         Lozh { mesto: "bubble::klass_simvola", govorit: "класс символа по таблицам Unicode", delaet: "смотрит только на ASCII 32..126, руками, через 129 веток match", priznak: "pub fn klass_simvola" },
         Lozh { mesto: "bubble::kontrolnaya_summa8", govorit: "контрольная сумма восьми байтов", delaet: "считает её дважды копипастой и выбрасывает второй результат", priznak: "pub fn kontrolnaya_summa8" },
+        Lozh { mesto: "execute_me::proverka_razmerov", govorit: "проверяет, что все размеры на месте", delaet: "возвращает длину списка и больше ничего не делает", priznak: "pub fn proverka_razmerov" },
     ]
 }
 

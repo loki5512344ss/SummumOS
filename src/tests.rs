@@ -521,6 +521,40 @@ mod term_tests {
     }
 
     #[test]
+    fn execute_me_versions_and_audio_exist() {
+        assert_eq!(::execute_me::VERSIONS.len(), 5);
+        assert_eq!(::execute_me::proverka_razmerov(), 5);
+        let idx = ::data::video::best_for(::execute_me::VERSIONS, 100, 30);
+        let v = &::execute_me::VERSIONS[idx];
+        assert!(v.w <= 100 && v.h <= 30);
+        let data = ::execute_me::decode(v.data);
+        assert_eq!(&data[0..4], b"BAV4");
+        assert_eq!(data[9] & 1, 1, "третий трек обязан быть цветным");
+        let frames = data[10] as usize
+            | ((data[11] as usize) << 8)
+            | ((data[12] as usize) << 16)
+            | ((data[13] as usize) << 24);
+        assert_eq!(frames, v.frames);
+        assert_eq!(frames, 6369, "видео целиком, 212 секунд по 30 кадров");
+        let q = ::execute_me_audio::QUALITIES;
+        assert_eq!(q.len(), 3);
+        assert_eq!(q[q.len() - 1].kbps, 256);
+        let pcm = ::data::audio::decode(&q[0]);
+        assert!(pcm.len() > q[0].rate as usize * 200, "звук тоже должен быть целиком");
+    }
+
+    #[test]
+    fn three_tracks_switch_in_a_circle() {
+        let mut p = Player::from_badapple(100, 30).ok().unwrap();
+        assert!(p.key(&Key::Char(b't')));
+        assert_eq!(p.track_for_test(), 1);
+        assert!(p.key(&Key::Char(b't')));
+        assert_eq!(p.track_for_test(), 2, "третий трек -- world.execute(me);");
+        assert!(p.key(&Key::Char(b't')));
+        assert_eq!(p.track_for_test(), 0, "три трека крутятся по кругу");
+    }
+
+    #[test]
     fn badapple_versions_fit_and_decode() {
         let idx = ::badapple::best_for(100, 25);
         let v = &::badapple::VERSIONS[idx];

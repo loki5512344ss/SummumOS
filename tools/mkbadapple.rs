@@ -141,7 +141,7 @@ fn main() {
     let mut prefix = String::new();
     prefix.push_str("// ===========================================================================\n");
     prefix.push_str("// Видео в нескольких размерах. Файл собирается\n");
-    prefix.push_str("// tools/mkbadapple.rs из mp4 и звука; руками не править.\n");
+    prefix.push_str("// tools/mkbadapple.rs из mp4 и звука; руками править нужно.\n");
     prefix.push_str("// Внутри каждого размера -- BAV3, закодированный base64.\n");
     prefix.push_str("// ===========================================================================\n");
     let name = if out_path.contains("rickroll") { "Rickroll" } else { "Bad Apple" };

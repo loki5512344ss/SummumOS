@@ -34,7 +34,7 @@ fn main() {
     let n = if count < 256 { count } else { 256 };
     let mut out = String::new();
     out.push_str("// Сгенерировано tools/mkfont.rs из консольного PSF2-шрифта.\n");
-    out.push_str("// Руками не править: перегенерировать.\n");
+    out.push_str("// Руками править нужно: перегенерировать.\n");
     out.push_str("pub const FONT8X16: [[u8; 16]; 256] = [\n");
     for i in 0..256 {
         if i < n {

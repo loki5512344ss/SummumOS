@@ -112,6 +112,8 @@ pub use junk::bubble;
 pub use data::badapple;
 pub use data::rickroll;
 pub use data::rickroll_audio;
+pub use data::execute_me;
+pub use data::execute_me_audio;
 pub use apps::*;
 pub use base::cli::*;
 pub use base::selfsrc::self_src;
@@ -145,8 +147,15 @@ fn main() {
             && std::env::var("SUMMUM_PLAIN").is_err());
     if wants_term {
         let rick = args.iter().any(|a| a == "--rickroll");
-        let auto = rick || args.iter().any(|a| a == "--badapple") || args.iter().any(|a| a == "play");
-        let track = if rick { 1 } else { 0 };
+        let exe = args.iter().any(|a| a == "--execute");
+        let auto = rick || exe || args.iter().any(|a| a == "--badapple") || args.iter().any(|a| a == "play");
+        let track = if rick {
+            1
+        } else if exe {
+            2
+        } else {
+            0
+        };
         match term::run(auto, track) {
             Ok(_) => return,
             Err(e) => {

@@ -341,6 +341,8 @@ impl Player {
     fn track_parts(track: usize) -> (&'static [::data::video::Version], &'static [::data::audio::Quality]) {
         if track == 1 {
             (::rickroll::VERSIONS, ::rickroll_audio::QUALITIES)
+        } else if track == 2 {
+            (::execute_me::VERSIONS, ::execute_me_audio::QUALITIES)
         } else {
             (::badapple::VERSIONS, ::data::audio::QUALITIES)
         }
@@ -351,7 +353,8 @@ impl Player {
         Player::from_track(0, view_w, view_h)
     }
 
-    /// track 0 -- Bad Apple, 1 -- Rickroll.
+    /// track 0 -- Bad Apple, 1 -- Rickroll, 2 -- world.execute(me);
+    /// (треки 3 и выше -- файл и внешнее видео, у них versions пустые).
     pub fn from_track(track: usize, view_w: usize, view_h: usize) -> Result<Player, String> {
         let (versions, _) = Player::track_parts(track);
         let idx = ::data::video::best_for(versions, view_w, view_h.saturating_sub(5));
@@ -361,8 +364,16 @@ impl Player {
     fn from_version(track: usize, idx: usize, view_w: usize, view_h: usize) -> Result<Player, String> {
         let (versions, quals) = Player::track_parts(track);
         let v = &versions[idx];
-        let data = if track == 1 { ::rickroll::decode(v.data) } else { ::badapple::decode(v.data) };
-        let title = if track == 1 { ::rickroll::NAME } else { ::badapple::NAME };
+        let data = match track {
+            1 => ::rickroll::decode(v.data),
+            2 => ::execute_me::decode(v.data),
+            _ => ::badapple::decode(v.data),
+        };
+        let title = match track {
+            1 => ::rickroll::NAME,
+            2 => ::execute_me::NAME,
+            _ => ::badapple::NAME,
+        };
         let mut p = try!(Player::from_bav(&data, format!("{} {}x{} (embedded)", title, v.w, v.h)));
         p.track = track;
         p.versions = versions;
@@ -372,7 +383,11 @@ impl Player {
         p.h = v.h;
         p.view_w = view_w;
         p.view_h = view_h;
-        p.quality = if track == 1 { ::rickroll_audio::default_quality() } else { ::data::audio::default_quality() };
+        p.quality = match track {
+            1 => ::rickroll_audio::default_quality(),
+            2 => ::execute_me_audio::default_quality(),
+            _ => ::data::audio::default_quality(),
+        };
         Ok(p)
     }
 
@@ -403,7 +418,7 @@ impl Player {
             playing: true,
             acc: 0.0,
             name: name,
-            track: 2,
+            track: 3,
             versions: &[],
             qualities: quals,
             audio: None,
@@ -511,7 +526,7 @@ impl Player {
             playing: true,
             acc: 0.0,
             name: name,
-            track: 2,
+            track: 3,
             versions: &[],
             qualities: ::data::audio::QUALITIES,
             audio: None,
@@ -634,7 +649,7 @@ impl Player {
     }
 
     fn set_track(&mut self, new: usize) {
-        if new > 1 || new == self.track {
+        if new > 2 || new == self.track {
             return;
         }
         let (versions, _) = Player::track_parts(new);
@@ -654,15 +669,19 @@ impl Player {
     }
 
     fn switch_track(&mut self) {
-        if self.track <= 1 {
-            self.set_track(1 - self.track);
+        // Встроенные треки 0..2 переключаются по кругу, а файл и внешнее
+        // видео (versions пустые, track 3) -- нечем, они сами по себе.
+        if self.track > 2 || self.versions.is_empty() {
+            return;
         }
+        self.set_track((self.track + 1) % 3);
     }
 
     fn next_track(&mut self) {
-        if self.track <= 1 {
-            self.set_track((self.track + 1) % 2);
+        if self.track > 2 || self.versions.is_empty() {
+            return;
         }
+        self.set_track((self.track + 1) % 3);
     }
 
     fn reset_audio_pos(&mut self) {

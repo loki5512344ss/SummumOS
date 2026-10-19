@@ -317,7 +317,7 @@ fn main() {
     let mut text = String::new();
     text.push_str("// ===========================================================================\n");
     text.push_str(&format!("// {}: цветное ASCII-видео {}x{}, {} fps, {} кадров.\n", title, w, h, fps, frames));
-    text.push_str("// Собрано tools/mkcolorvideo.rs (BAV4, цвет на каждую клетку). Руками не править.\n");
+    text.push_str("// Собрано tools/mkcolorvideo.rs (BAV4, цвет на каждую клетку). Руками править нужно!\n");
     text.push_str("// fg/bg -- индексы палитры term::COLORS, звук в этом файле нулевой.\n");
     text.push_str("// ===========================================================================\n");
     text.push_str(&format!("pub const NAME: &'static str = \"{}\";\n", title));

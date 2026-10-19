@@ -400,6 +400,7 @@ impl Shell {
                 term.write_str("shader [plasma|sun|pyramid|lattice|stars] -- GPU shaders\n");
                 term.write_str("3d -- view a 3D object (cube/pyramid/octa/torus) on the GPU\n");
                 term.write_str("play [file.bav] -- Bad Apple: stop/play/seek/progress\n");
+                term.write_str("execute -- world.execute(me);, the third embedded track\n");
                 term.write_str("color -- a short colored ASCII test pattern\n");
                 term.write_str("clear -- clear the screen\n");
                 term.write_str("quit -- leave this terminal\n");
@@ -467,6 +468,20 @@ impl Shell {
             }
             "rickroll" => {
                 match player::Player::from_track(1, term.w, term.h) {
+                    Ok(mut p) => {
+                        p.open_audio();
+                        self.mode = Mode::Player(p);
+                        term.clear();
+                    }
+                    Err(e) => {
+                        term.write_str("player: ");
+                        term.write_str(&e);
+                        term.write_str("\n");
+                    }
+                }
+            }
+            "execute" | "world" => {
+                match player::Player::from_track(2, term.w, term.h) {
                     Ok(mut p) => {
                         p.open_audio();
                         self.mode = Mode::Player(p);
