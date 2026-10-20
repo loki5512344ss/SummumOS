@@ -30,6 +30,10 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../lang/mod.rs"));
     s.push_str(include_str!("../lang/lua/mod.rs"));
     s.push_str(include_str!("../lang/guard.rs"));
+    s.push_str(include_str!("../mega_os/mod.rs"));
+    s.push_str(include_str!("../mega_os/boot.rs"));
+    s.push_str(include_str!("../mega_os/kernel.rs"));
+    s.push_str(include_str!("../mega_os/kernel.asm"));
     s.push_str(include_str!("../apps/mod.rs"));
     s.push_str(include_str!("../apps/hello.asm"));
     s.push_str(include_str!("../apps/privet_iz_pelmenya.txt"));
@@ -42,6 +46,7 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../apps/player.asm"));
     s.push_str(include_str!("../apps/term/mod.rs"));
     s.push_str(include_str!("../apps/term/doom.rs"));
+    s.push_str(include_str!("../apps/term/demon_v_tapke.rs"));
     s.push_str(include_str!("../apps/term/model.rs"));
     s.push_str(include_str!("../apps/term/shaderview.rs"));
     s.push_str(include_str!("../apps/term/audio.rs"));

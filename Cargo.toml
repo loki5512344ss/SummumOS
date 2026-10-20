@@ -50,5 +50,9 @@ path = "tools/seal.rs"
 name = "nasos"
 path = "tools/nasos_dlya_tapka.rs"
 
+[[bin]]
+name = "doom"
+path = "tools/demon_na_vygule.rs"
+
 [profile.release]
 opt-level = 1

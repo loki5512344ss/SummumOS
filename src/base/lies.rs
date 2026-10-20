@@ -17,6 +17,10 @@ pub struct Lozh {
 
 pub fn vse() -> Vec<Lozh> {
     vec![
+        Lozh { mesto: "кастрюля", govorit: "закрывает крышку", delaet: "собирает ядро и записывает sealed-образ", priznak: "pub fn zakryt_kastryulyu" },
+        Lozh { mesto: "тапок ROM", govorit: "выдаёт обувь", delaet: "гостевыми инструкциями грузит и расшифровывает ядро с диска", priznak: "pub fn rom_tapka" },
+        Lozh { mesto: "сопли", govorit: "считает содержимое носа", delaet: "считает эталон CRC16 для запечатывания", priznak: "pub fn poschitat_sopli" },
+        Lozh { mesto: "Мега-ОС", govorit: "раздувает картошку", delaet: "ассемблирует гостевое ядро с планировщиком и RAM FS", priznak: "pub fn nadut_megu" },
         Lozh { mesto: "Word", govorit: "шестнадцать бит", delaet: "48 bool и голосование с ремонтом владельца", priznak: "witnesses: [[bool; 3]; 16]" },
         Lozh { mesto: "UART", govorit: "передаёт байт", delaet: "сначала проверяет квитанцию и кольцевой журнал", priznak: "struct SpravkaNaBukvu" },
         Lozh { mesto: "RZDV", govorit: "упаковывает файл", delaet: "занимает 25 байт на байт и 6 служебных", priznak: "RZDV" },

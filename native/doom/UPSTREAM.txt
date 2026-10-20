@@ -1,0 +1,23 @@
+Doom backend provenance
+
+Portable engine: https://github.com/ozkl/doomgeneric
+Commit: e257a09527062bfb986b6e5e0780839b6cbd5b71
+Retrieved: 2026-10-20
+The core/ directory is copied from doomgeneric/. Local change:
+- m_config.c: support -savedir PATH (the upstream port ignored this option).
+Original source reference: https://github.com/id-Software/DOOM
+Commit: a77dfb9
+
+This engine derives from id Software Doom and Chocolate Doom. Copyright notices
+remain in every source file. The engine and tapok_sdl.c are distributed under
+GPL-2.0-or-later; see COPYING and the individual source headers. The repository's
+TAPOK-256 license does not apply to this directory. The executable is a separate
+process, not linked into the Rust application.
+
+No IWAD, maps, textures, music, or other game data are included. Supply a legally
+obtained compatible Doom IWAD or freely licensed Freedoom IWAD separately.
+
+Local integration files: Makefile, tapok_sdl.c. Network multiplayer is not
+implemented by DoomGeneric. SDL2_mixer is optional; without it sound and music
+are disabled. Music with SDL2_mixer also requires an available MIDI synthesizer
+and its instrument data (for example a configured soundfont).

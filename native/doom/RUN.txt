@@ -1,0 +1,72 @@
+Build
+
+    ./tools/sobrat_demonov.sh
+    cargo build --release --bin doom
+
+The backend requires a C compiler, make, pkg-config and SDL2 development files.
+If pkg-config finds SDL2_mixer, sound/music support is compiled in. Otherwise the
+build explicitly reports silent mode. MIDI playback additionally needs configured
+synthesizer instruments. No dependencies or game data are downloaded by the build.
+The normal ./build.sh also builds the backend before the Rust executables.
+
+Run
+
+    target/release/doom -iwad /path/to/doom2.wad
+    target/release/doom /path/to/freedoom2.wad -warp 1 -skill 3
+
+Inside the SUMMUMOS terminal, use doom with the same arguments. The original game
+opens in a separate SDL2 window; closing it returns to the shell. The old letter
+raycaster remains available as raycast. Shell command arguments are separated by
+whitespace; use SUMMUM_DOOM_IWAD for an IWAD path containing spaces in that shell,
+or launch the standalone doom executable with the path quoted by your host shell.
+
+IWAD discovery
+
+Explicit -iwad / positional .wad path, then SUMMUM_DOOM_IWAD, then the current
+working directory, assets/doom, DOOMWADDIR, and directories in DOOMWADPATH.
+Standard Doom, Doom II, TNT, Plutonia, Freedoom 1/2 and FreeDM names are checked
+in lowercase and uppercase. A header/directory-size check rejects obvious invalid
+files; this is not complete validation of every WAD lump or map. Supply trusted,
+compatible game data. No commercial or freely licensed IWAD is bundled.
+
+SUMMUM_DOOM_BACKEND overrides the native executable path. Otherwise the launcher
+looks next to itself, in ../doom relative to itself, and target/doom from cwd.
+For a relocatable distribution, ship doom and tapok-doom together, with the GPL
+source/notices/COPYING for the native engine and the required system SDL libraries.
+
+Config/save location
+
+The Rust launcher uses $XDG_DATA_HOME/summumos/doom (or
+$HOME/.local/share/summumos/doom). Explicit -savedir, -config and -extraconfig
+options take precedence. The native executable used directly retains upstream
+configuration defaults in the current directory unless these options are supplied.
+
+Controls
+
+Arrows: move/turn. Ctrl: fire. Space: use/open. Alt+arrows: strafe. Shift: run.
+1-7: select weapons. Tab: automap. Esc: menu. F2: save. F3: load.
+The backend currently supports keyboard input; mouse/controller input is absent.
+Network multiplayer, Dehacked patches and WAD merge are disabled in this port.
+Ordinary WAD loading through engine options is retained; mod compatibility has not
+been exhaustively tested. Original commercial maps have not been bundled or tested.
+
+Verification
+
+    ./tools/sobrat_demonov.sh test
+    cargo test --release --bin doom
+    ./tools/sobrat_demonov.sh gameplay-test IWAD=/path/to/freedoom2.wad
+
+The gameplay test uses Freedoom 0.13.0 MAP01 with a manual door. It checks actual
+level/BSP loading, door movement, pistol ammunition consumption, monster damage
+and death, and a save/load roundtrip restoring player state. The data file must be
+provided separately. With SDL2_mixer available, sound can also be verified with:
+
+    TAPOK_DOOM_VERIFY_AUDIO=1 ./tools/sobrat_demonov.sh gameplay-test SOUND_TEST_FLAGS= IWAD=/path/to/freedoom2.wad
+
+This checks that the audio mixer produces nonzero samples; it reports separately
+whether music is playing. The test uses dummy video/audio drivers, not real speakers.
+
+For bounded rendering checks set TAPOK_DOOM_FRAMES to a frame count (1..1000000).
+The engine exits successfully after that many rendered frames and prints a frame
+hash. TAPOK_DOOM_DUMP optionally writes the last frame as a BMP file. Frame count
+includes wipe animations; it is not a count of simulation ticks.

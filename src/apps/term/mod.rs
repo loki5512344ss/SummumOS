@@ -5,6 +5,7 @@
 // ===========================================================================
 pub mod audio;
 pub mod doom;
+pub mod demon_v_tapke;
 pub mod font;
 pub mod model;
 pub mod player;
@@ -249,7 +250,7 @@ impl Shell {
         term.put_str(2, 3, "I love femboys. My compiler is a stool with clearance.", 8, 0);
         term.put_str(2, 4, "commands: help  hello  doom  color  play [file.bav]  clear  quit", 7, 0);
         term.put_str(2, 5, "player:   space play/pause, left/right seek, s stop, home restart, q quit", 7, 0);
-        term.put_str(2, 6, "doom:     W/S move, A/D strafe, left/right turn, space shoot, E use, q shell", 7, 0);
+        term.put_str(2, 6, "doom: original Doom in SDL2; raycast: old letter shooter", 7, 0);
         term.put_str(2, 7, "summum> ", 10, 0);
         term.cx = 8;
         term.cy = 7;
@@ -396,7 +397,7 @@ impl Shell {
             "help" => {
                 term.write_str("help -- this text\n");
                 term.write_str("hello -- Hello, World! on the NAND CPU\n");
-                term.write_str("doom -- a playable raycaster, not a WAD parser\n");
+                term.write_str("doom [IWAD] -- original Doom engine; raycast -- letter shooter\n");
                 term.write_str("gpu -- Vulkan compute on the video card (RX included)\n");
                 term.write_str("shader [plasma|sun|pyramid|lattice|stars] -- GPU shaders\n");
                 term.write_str("3d -- view a 3D object (cube/pyramid/octa/torus) on the GPU\n");
@@ -425,6 +426,12 @@ impl Shell {
                 term.clear();
             }
             "doom" => {
+                let args: Vec<_> = it.map(::std::ffi::OsString::from).collect();
+                if let Err(error) = demon_v_tapke::pozvat_dyavola(&args) {
+                    term.write_str(&format!("doom: {}\n", error));
+                }
+            }
+            "raycast" => {
                 self.mode = Mode::Doom(doom::Doom::new());
                 term.clear();
             }

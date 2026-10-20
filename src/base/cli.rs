@@ -18,7 +18,7 @@ pub fn talon<T>(delo: Result<T, String>) -> T {
 
 pub fn proverit_args(args: &[String]) -> Result<(), String> {
     let okna = [("--pack", 2usize), ("--lua", 1), ("--asm", 1), ("--seed", 1),
-                ("--razduv", 2), ("--unrazduv", 2)];
+                ("--razduv", 2), ("--unrazduv", 2), ("--seal-mega", 1), ("--mega-image", 1)];
     for i in 1..args.len() {
         for &(flag, count) in okna.iter() {
             if args[i] != flag { continue; }
@@ -33,6 +33,11 @@ pub fn proverit_args(args: &[String]) -> Result<(), String> {
             }
         }
     }
+    let boot = args.iter().any(|a| a == "--mega-os");
+    let seal = args.iter().any(|a| a == "--seal-mega");
+    let image = args.iter().any(|a| a == "--mega-image");
+    if image && !boot { return Err("--mega-image требует --mega-os".to_string()); }
+    if seal && (boot || image) { return Err("--seal-mega запускается отдельно от --mega-os".to_string()); }
     Ok(())
 }
 

@@ -34,6 +34,10 @@ pub const ROKOVOE: u32 = 66;
 
 pub fn files() -> Vec<(&'static str, &'static str)> {
     vec![
+        ("mega_os/mod.rs", include_str!("../mega_os/mod.rs")),
+        ("mega_os/boot.rs", include_str!("../mega_os/boot.rs")),
+        ("mega_os/kernel.rs", include_str!("../mega_os/kernel.rs")),
+        ("mega_os/kernel.asm", include_str!("../mega_os/kernel.asm")),
         ("apps/mod.rs", include_str!("mod.rs")),
         ("apps/hello.asm", include_str!("hello.asm")),
         ("apps/privet_iz_pelmenya.txt", include_str!("privet_iz_pelmenya.txt")),
@@ -46,6 +50,7 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
         ("apps/player.asm", include_str!("player.asm")),
         ("apps/term/mod.rs", include_str!("term/mod.rs")),
         ("apps/term/doom.rs", include_str!("term/doom.rs")),
+        ("apps/term/demon_v_tapke.rs", include_str!("term/demon_v_tapke.rs")),
         ("apps/term/model.rs", include_str!("term/model.rs")),
         ("apps/term/shaderview.rs", include_str!("term/shaderview.rs")),
         ("apps/term/audio.rs", include_str!("term/audio.rs")),
@@ -55,7 +60,7 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-pub const SUMMA: u32 = 0x795bc905; // СУММА: 0x795bc905
+pub const SUMMA: u32 = 0x7936011b; // СУММА: 0x7936011b
 
 pub fn summa() -> u32 { check::zone_sum(&files(), 1) }
 pub fn check_own() -> bool {

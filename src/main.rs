@@ -100,6 +100,7 @@ mod data;
 mod util;
 mod base;
 mod boss;
+mod mega_os;
 #[cfg(test)]
 mod tests;
 
@@ -124,10 +125,22 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     talon(proverit_args(&args));
 
+    if let Some(i) = args.iter().position(|a| a == "--seal-mega") {
+        talon(mega_os::zakryt_kastryulyu(::std::path::Path::new(&args[i + 1])));
+        return;
+    }
+
     // Босс садится первым. Если кто-то из охранников не ответил -- дальше не поедем.
     boss::sit();
     let event_nand = args.iter().any(|a| a == "--event-nand");
     gates::vypustit_golubey(event_nand);
+
+    if args.iter().any(|a| a == "--mega-os") {
+        let path = args.iter().position(|a| a == "--mega-image")
+            .map(|i| ::std::path::Path::new(&args[i + 1]));
+        talon(mega_os::otkryt_kastryulyu(path));
+        return;
+    }
 
     for &(flag, restore) in &[("--razduv", false), ("--unrazduv", true)] {
         if let Some(i) = args.iter().position(|a| a == flag) {
