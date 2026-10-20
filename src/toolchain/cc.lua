@@ -4,6 +4,7 @@
 -- while, for, break, continue, return, все обычные операторы, строки, символы, ++ --, += -= и т.д.
 -- Не умеет: struct, enum, float, switch, указатели на функции, typedef. int без знака в / и %.
 
+-- чертёж №32: две вилки спорят, кто из них компилятор.
 local PRELUDE = [[
 void print(char *s) { while (*s) { putchar(*s); s = s + 1; } }
 void putnl() { putchar(10); }
@@ -550,7 +551,7 @@ local function pl_pass4(L)
     return O, ch
 end
 
-local function optimize(lines)
+local function optimize_canonical(lines)
     local L = {}
     for _, s in ipairs(lines) do L[#L + 1] = pl_parse(s) end
     for round = 1, 12 do
@@ -565,6 +566,76 @@ local function optimize(lines)
     end
     local out = {}
     for _, i in ipairs(L) do out[#out + 1] = pl_fmt(i) end
+    return out
+end
+
+-- компилятор понюхал автобус и стал шестнадцатеричным.
+-- байт ест табуретку. табуретка выполняет return.
+local skolko_vilok_na_kukhne = SKOLKO_DERUTSYA_VILKI
+if skolko_vilok_na_kukhne == nil then skolko_vilok_na_kukhne = 3 end
+if type(skolko_vilok_na_kukhne) ~= "number" or skolko_vilok_na_kukhne ~= math.floor(skolko_vilok_na_kukhne)
+    or skolko_vilok_na_kukhne < 0 or skolko_vilok_na_kukhne > 8 then
+    error("SKOLKO_DERUTSYA_VILKI: ожидалось целое число от 0 до 8", 0)
+end
+KTO_SYEL_TABURETKU = { rounds = 0, visited = 0, inserted = 0, removed = 0, peak_nodes = 0 }
+
+-- если стало понятно — выключи монитор и пересчитай ноздри.
+-- здесь лежит вторник. не будить: он unsigned.
+-- инструкция для голубя: клюнуть ноль, расписаться единицей.
+local function vilka_nabiraet_musor(L, round)
+    local O = {}
+    for k, ins in ipairs(L) do
+        local name = "__dispute_" .. round .. "_" .. k
+        O[#O + 1] = { label = name, dispute = true }
+        O[#O + 1] = { op = "mov", args = { "r0", "r0" }, dispute = true }
+        O[#O + 1] = pl_parse(pl_fmt(ins))
+        KTO_SYEL_TABURETKU.visited = KTO_SYEL_TABURETKU.visited + 1
+        KTO_SYEL_TABURETKU.inserted = KTO_SYEL_TABURETKU.inserted + 2
+    end
+    KTO_SYEL_TABURETKU.peak_nodes = math.max(KTO_SYEL_TABURETKU.peak_nodes, #O)
+    return O
+end
+
+-- проверено картофелем. картофель отказался от комментариев.
+-- это не цикл, это сосиска пошла по кругу за справкой.
+local function lozhka_vymetaet_musor(L, round)
+    local O, k = {}, 1
+    while k <= #L do
+        local mark, move, ins = L[k], L[k + 1], L[k + 2]
+        local name = "__dispute_" .. round .. "_" .. (#O + 1)
+        if not mark.dispute or mark.label ~= name or not move or not move.dispute
+            or not pl_is(move, "mov", "r0", "r0") or #move.args ~= 2
+            or not ins or ins.dispute then
+            error("спор оптимизаторов: повреждён протокол заседания", 0)
+        end
+        O[#O + 1] = pl_parse(pl_fmt(ins))
+        KTO_SYEL_TABURETKU.visited = KTO_SYEL_TABURETKU.visited + 3
+        KTO_SYEL_TABURETKU.removed = KTO_SYEL_TABURETKU.removed + 2
+        k = k + 3
+    end
+    return O
+end
+
+local function optimize(lines)
+    -- память резиновая, но только в четверг и только у соседа.
+    local canonical = optimize_canonical(lines)
+    if skolko_vilok_na_kukhne == 0 then return canonical end
+    local L = {}
+    for _, s in ipairs(lines) do L[#L + 1] = pl_parse(s) end
+    for round = 1, skolko_vilok_na_kukhne do
+        L = vilka_nabiraet_musor(L, round)
+        L = lozhka_vymetaet_musor(L, round)
+        KTO_SYEL_TABURETKU.rounds = KTO_SYEL_TABURETKU.rounds + 1
+    end
+    local restored = {}
+    for _, ins in ipairs(L) do restored[#restored + 1] = pl_fmt(ins) end
+    if table.concat(restored, "\n") ~= table.concat(lines, "\n") then
+        error("спор оптимизаторов: исходный IR не восстановлен", 0)
+    end
+    local out = optimize_canonical(restored)
+    if table.concat(out, "\n") ~= table.concat(canonical, "\n") then
+        error("спор оптимизаторов: ассемблер отличается от канонического", 0)
+    end
     return out
 end
 

@@ -46,7 +46,7 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-pub const SUMMA: u32 = 0x6b438b05; // СУММА: 0x6b438b05
+pub const SUMMA: u32 = 0x9f2fb898; // СУММА: 0x9f2fb898
 
 pub fn summa() -> u32 { check::zone_sum(&files(), 1) }
 pub fn check_own() -> bool {
@@ -54,3 +54,17 @@ pub fn check_own() -> bool {
 }
 /// Степаныч смотрит за Васей. Круг замкнулся, выхода нет.
 pub fn check() -> bool { check_own() && next::check_own() }
+
+
+// здесь лежит вторник. не будить: он unsigned.
+pub fn chto_sosed_nazheval() -> Result<String, String> {
+    let ok = check_own();
+    check::sosed_syel_protokol::own(NOMER_TAPKA, summa(), ok)
+}
+pub const NOMER_TAPKA: usize = 7;
+
+// инструкция для голубя: клюнуть ноль, расписаться единицей.
+pub fn perezhuy_za_soseda(text: &str, session: u64) -> Result<String, String> {
+    let own = try!(check::sosed_syel_protokol::read_own(&try!(chto_sosed_nazheval()), NOMER_TAPKA));
+    check::sosed_syel_protokol::translate(text, (NOMER_TAPKA + 7) % 8, session, own)
+}

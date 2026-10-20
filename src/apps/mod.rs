@@ -14,6 +14,11 @@ pub const SELFTEST: &'static str = include_str!("selftest.asm");
 pub const PLAYER: &'static str = include_str!("player.asm");
 pub const HELLO: &'static str = include_str!("hello.asm");
 
+// здесь лежит вторник. не будить: он unsigned.
+pub fn dostat_pelmen() -> Result<Vec<u8>, String> {
+    ::vedro_s_dyrkoy::vysosat_tapok(include_bytes!("privet_iz_pelmenya.rzd")).map_err(|e| e.to_string())
+}
+
 pub fn quine_main() -> i32 {
     let mut ok = true;
     let mut say = |good: bool, what: &str| {

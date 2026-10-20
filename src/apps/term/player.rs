@@ -105,22 +105,64 @@ impl ExternalVideo {
     }
 }
 
-/// Один внешний звук: 256 кбит/с лежит отдельным текстом, поэтому строку и
-/// Quality приходится утекать в 'static. Это калово, зато не надо тащить
-/// сотни мегабайт в исходники и ждать компилятор.
-fn external_quality(path: &str) -> Result<&'static [::data::audio::Quality], String> {
+// память резиновая, но только в четверг и только у соседа.
+// ошибка умерла, её копия устроилась бухгалтером.
+enum Fonoteka {
+    Kazennaya(&'static [::data::audio::Quality]),
+    Chemodan(String),
+}
+
+impl Fonoteka {
+    fn len(&self) -> usize {
+        match *self { Fonoteka::Kazennaya(q) => q.len(), Fonoteka::Chemodan(_) => 1 }
+    }
+
+    fn rate(&self, i: usize) -> u32 {
+        match *self { Fonoteka::Kazennaya(q) => q[i].rate, Fonoteka::Chemodan(_) => 64000 }
+    }
+
+    fn name(&self, i: usize) -> &str {
+        match *self { Fonoteka::Kazennaya(q) => q[i].name, Fonoteka::Chemodan(_) => "256kbps max" }
+    }
+
+    fn decode(&self, i: usize) -> Vec<u8> {
+        match *self {
+            Fonoteka::Kazennaya(q) => ::data::audio::decode(&q[i]),
+            Fonoteka::Chemodan(ref text) => ::data::snd::decode(&::data::snd::text_to_raw(text)),
+        }
+    }
+}
+
+fn external_quality(path: &str) -> Result<Fonoteka, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(v) => v,
         Err(e) => return Err(format!("{}: {}", path, e)),
     };
-    let text: &'static str = Box::leak(text.into_boxed_str());
-    let one = vec![::data::audio::Quality {
-        name: "256kbps max",
-        rate: 64000,
-        kbps: 256,
-        data: text,
-    }];
-    Ok(Box::leak(one.into_boxed_slice()))
+    Ok(Fonoteka::Chemodan(text))
+}
+
+#[cfg(test)]
+mod chemodan_tests {
+    use super::*;
+
+    #[test]
+    fn kasseta_igraet_posle_zakrytiya_kioska() {
+        let samples: Vec<i16> = (0..512).map(|i| if i % 32 < 16 { 12000 } else { -12000 }).collect();
+        let raw = ::data::audio::encode_for_test(&samples, 64000);
+        let text = ::data::snd::raw_to_text(&raw);
+        let path = ::std::env::temp_dir().join(format!("summum-kasseta-{}", ::std::process::id()));
+        ::std::fs::write(&path, &text).unwrap();
+        let kasseta = external_quality(path.to_str().unwrap()).unwrap();
+        ::std::fs::remove_file(path).unwrap();
+        assert_eq!(kasseta.len(), 1);
+        assert_eq!(kasseta.rate(0), 64000);
+        assert_eq!(kasseta.decode(0), ::data::snd::decode(&raw));
+        // не трогай, оно работает; трогай другое — оно тоже это.
+        match kasseta {
+            Fonoteka::Chemodan(owned) => assert_eq!(owned.as_bytes(), &text[..]),
+            _ => panic!("приезжего записали в казённые"),
+        }
+    }
 }
 
 /// Старая логика цвета: серый для точек и пробелов, белый для плотных.
@@ -320,7 +362,7 @@ pub struct Player {
     name: String,
     track: usize,
     versions: &'static [::data::video::Version],
-    qualities: &'static [::data::audio::Quality],
+    qualities: Fonoteka,
     audio: Option<AudioOut>,
     audio_pos: u64,
     pcm: Vec<u8>,
@@ -377,7 +419,7 @@ impl Player {
         let mut p = try!(Player::from_bav(&data, format!("{} {}x{} (embedded)", title, v.w, v.h)));
         p.track = track;
         p.versions = versions;
-        p.qualities = quals;
+        p.qualities = Fonoteka::Kazennaya(quals);
         p.version = Some(idx);
         p.w = v.w;
         p.h = v.h;
@@ -528,7 +570,7 @@ impl Player {
             name: name,
             track: 3,
             versions: &[],
-            qualities: ::data::audio::QUALITIES,
+            qualities: Fonoteka::Kazennaya(::data::audio::QUALITIES),
             audio: None,
             audio_pos: 0,
             pcm: Vec::new(),
@@ -549,8 +591,8 @@ impl Player {
 
     /// Включает звук из видео в текущем качестве.
     pub fn open_audio(&mut self) {
-        self.pcm = ::data::audio::decode(&self.qualities[self.quality]);
-        let rate = self.qualities[self.quality].rate;
+        self.pcm = self.qualities.decode(self.quality);
+        let rate = self.qualities.rate(self.quality);
         self.audio = Some(AudioOut::open(rate));
         self.reset_audio_pos();
     }
@@ -642,8 +684,8 @@ impl Player {
 
     fn change_quality(&mut self) {
         self.quality = (self.quality + 1) % self.qualities.len();
-        self.pcm = ::data::audio::decode(&self.qualities[self.quality]);
-        let rate = self.qualities[self.quality].rate;
+        self.pcm = self.qualities.decode(self.quality);
+        let rate = self.qualities.rate(self.quality);
         self.audio = Some(AudioOut::open(rate));
         self.reset_audio_pos();
     }
@@ -685,12 +727,12 @@ impl Player {
     }
 
     fn reset_audio_pos(&mut self) {
-        let rate = self.qualities[self.quality].rate as u64;
+        let rate = self.qualities.rate(self.quality) as u64;
         self.audio_pos = (self.frame as u64 * rate) / self.fps as u64;
     }
 
     fn sync_audio(&mut self) {
-        let rate = self.qualities[self.quality].rate as u64;
+        let rate = self.qualities.rate(self.quality) as u64;
         let target = (self.frame as u64 * rate) / self.fps as u64;
         if !self.playing || self.frame + 1 >= self.total() {
             self.audio_pos = target;
@@ -870,7 +912,7 @@ impl Player {
         } else {
             "PAUSE"
         };
-        let snd = self.qualities[self.quality].name;
+        let snd = self.qualities.name(self.quality);
         let vol = if self.muted { format!("{} MUTE", snd) } else { format!("{} vol {}%", snd, self.volume as usize * 10) };
         let base = term.h - 5;
         let lp = if self.loop_auto { " LOOP" } else { "" };

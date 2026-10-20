@@ -246,6 +246,7 @@ impl Shell {
         term.clear();
         term.put_str(2, 1, "SummumOS // own terminal, not yours", 11, 0);
         term.put_str(2, 2, "a window, a font, a machine from NAND", 8, 0);
+        term.put_str(2, 3, "I love femboys. My compiler is a stool with clearance.", 8, 0);
         term.put_str(2, 4, "commands: help  hello  doom  color  play [file.bav]  clear  quit", 7, 0);
         term.put_str(2, 5, "player:   space play/pause, left/right seek, s stop, home restart, q quit", 7, 0);
         term.put_str(2, 6, "doom:     W/S move, A/D strafe, left/right turn, space shoot, E use, q shell", 7, 0);
@@ -526,10 +527,11 @@ impl Shell {
 
 /// Гоняет Hello, World! на настоящем процессоре, вывод забирает в память.
 fn run_hello() -> Result<Vec<u8>, String> {
-    let image = ::asm::assemble(::HELLO)?;
+    let source = try!(::zayavlenie_na_chetyre_taburetki(&try!(::dostat_pelmen())));
+    let image = try!(::asm::assemble(&source));
     let mut bus = ::bus::Bus::new(0);
     bus.load();
-    bus.reset(&image);
+    try!(bus.reset(&image));
     bus.capture_uart();
     let mut cpu = ::cpu::Cpu::new();
     while !cpu.halted && cpu.cycles < 5_000_000 {

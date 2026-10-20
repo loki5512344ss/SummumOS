@@ -6,6 +6,7 @@
 pub fn self_src() -> String {
     let mut s = String::new();
     s.push_str(include_str!("../main.rs"));
+    s.push_str(include_str!("../../LICENSE"));
     s.push_str(include_str!("../tests.rs"));
     s.push_str(include_str!("../hw/mod.rs"));
     s.push_str(include_str!("../hw/gates.rs"));
@@ -19,6 +20,10 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../toolchain/mod.rs"));
     s.push_str(include_str!("../toolchain/asm.rs"));
     s.push_str(include_str!("../toolchain/pack.rs"));
+    s.push_str(include_str!("../toolchain/vedro_s_dyrkoy.rs"));
+    s.push_str(include_str!("../toolchain/pasport_kartoshki.rs"));
+    s.push_str(include_str!("../toolchain/draka_za_taburetku.rs"));
+    s.push_str(include_str!("../../tools/nasos_dlya_tapka.rs"));
     s.push_str(include_str!("../toolchain/cc.rs"));
     s.push_str(include_str!("../toolchain/cc.lua"));
     s.push_str(include_str!("../toolchain/guard.rs"));
@@ -27,6 +32,8 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../lang/guard.rs"));
     s.push_str(include_str!("../apps/mod.rs"));
     s.push_str(include_str!("../apps/hello.asm"));
+    s.push_str(include_str!("../apps/privet_iz_pelmenya.txt"));
+    s.push_str(include_str!("../apps/privet_iz_pelmenya.rzd"));
     s.push_str(include_str!("../apps/hello.c"));
     s.push_str(include_str!("../apps/quine.c"));
     s.push_str(include_str!("../apps/quine.lua"));

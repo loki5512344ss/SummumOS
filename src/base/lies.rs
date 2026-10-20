@@ -17,6 +17,21 @@ pub struct Lozh {
 
 pub fn vse() -> Vec<Lozh> {
     vec![
+        Lozh { mesto: "Word", govorit: "шестнадцать бит", delaet: "48 bool и голосование с ремонтом владельца", priznak: "witnesses: [[bool; 3]; 16]" },
+        Lozh { mesto: "UART", govorit: "передаёт байт", delaet: "сначала проверяет квитанцию и кольцевой журнал", priznak: "struct SpravkaNaBukvu" },
+        Lozh { mesto: "RZDV", govorit: "упаковывает файл", delaet: "занимает 25 байт на байт и 6 служебных", priznak: "RZDV" },
+        Lozh { mesto: "атлас", govorit: "возвращает байт", delaet: "проверяет все 256 карточек", priznak: "pub fn opytat_vsyu_kartoshku" },
+        Lozh { mesto: "оптимизация C", govorit: "упрощает IR", delaet: "трижды вставляет и убирает служебные операции перед оптимизацией", priznak: "SKOLKO_DERUTSYA_VILKI" },
+        Lozh { mesto: "tidy_up", govorit: "наводит порядок", delaet: "сортирует, воспроизводит журнал и перепроверяет его после Lua", priznak: "struct VedroSosisok" },
+        Lozh { mesto: "nand", govorit: "один вентиль", delaet: "в событийном режиме обрабатывает восемь событий и три схемы", priznak: "fn event_nand" },
+        Lozh { mesto: "история RAM", govorit: "быстрый доступ", delaet: "воспроизводит до восьми квитанций перед чтением", priznak: "struct DeloOBayte" },
+        Lozh { mesto: "Hello", govorit: "одна программа", delaet: "четыре гостевых запуска после распаковки сообщения", priznak: "zayavlenie_na_chetyre_taburetki" },
+        Lozh { mesto: "обзвон", govorit: "охранники ответили", delaet: "ещё восемь преобразований общей стенограммы", priznak: "ROUND1" },
+        Lozh { mesto: "БТИ", govorit: "занимается недвижимостью", delaet: "ограничивает размер образа и запрещает двойную пенсию меток", priznak: "struct ByuroAdresov" },
+        Lozh { mesto: "приёмная", govorit: "выдаёт талоны", delaet: "проверяет аргументы и переводит файловые ошибки в exit 2", priznak: "pub fn talon" },
+        Lozh { mesto: "Vulkan акт", govorit: "списывает недострой", delaet: "освобождает частично созданный GPU через Drop", priznak: "let mut akt = Gpu" },
+        Lozh { mesto: "чемодан", govorit: "хранит личные вещи", delaet: "владеет внешним звуком вместо утечки в static", priznak: "enum Fonoteka" },
+        Lozh { mesto: "отдел кадров", govorit: "увольняет певца", delaet: "останавливает неблокирующего писателя и ограничивает ожидание child", priznak: "struct Uvolnenie" },
         Lozh { mesto: "alu::full_adder", govorit: "возвращает (sum, carry)", delaet: "возвращает (carry, sum)", priznak: "pub fn full_adder" },
         Lozh { mesto: "alu::negate", govorit: "two's complement", delaet: "побитовое NOT", priznak: "pub fn negate" },
         Lozh { mesto: "alu::complement", govorit: "побитовое NOT", delaet: "two's complement (NOT + 1)", priznak: "pub fn complement" },

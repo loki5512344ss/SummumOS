@@ -105,7 +105,7 @@ mod tests;
 
 // Всё что угодно из любой папки доступно из корня и друг другу. Так надо.
 pub use hw::{alu, bus, cpu, gates, isa, word};
-pub use toolchain::{asm, pack};
+pub use toolchain::{asm, pack, vedro_s_dyrkoy};
 pub use toolchain::cc::*;
 pub use lang::lua;
 pub use junk::bubble;
@@ -122,9 +122,20 @@ pub use util::hex::*;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    talon(proverit_args(&args));
 
     // Босс садится первым. Если кто-то из охранников не ответил -- дальше не поедем.
     boss::sit();
+    let event_nand = args.iter().any(|a| a == "--event-nand");
+    gates::vypustit_golubey(event_nand);
+
+    for &(flag, restore) in &[("--razduv", false), ("--unrazduv", true)] {
+        if let Some(i) = args.iter().position(|a| a == flag) {
+            talon(vedro_s_dyrkoy::pereselit_tapok(::std::path::Path::new(&args[i + 1]),
+                ::std::path::Path::new(&args[i + 2]), restore).map_err(|e| e.to_string()));
+            return;
+        }
+    }
 
     // «Проверка диска»: пишет в static mut и всегда возвращает true.
     let _ = junk::prikol::check_disk_health();
@@ -187,7 +198,7 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--pack") {
-        let text = String::from_utf8(read_file(&args[i + 1])).unwrap();
+        let text = read_text(&args[i + 1]);
         let snd: Vec<u8> = match args.get(i + 3) {
             Some(p) if !p.starts_with("--") => read_file(p),
             _ => Vec::new(),
@@ -199,17 +210,18 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        std::fs::File::create(&args[i + 2])
-            .unwrap()
-            .write_all(&out)
-            .unwrap();
+        talon(std::fs::write(&args[i + 2], &out)
+            .map_err(|e| format!("{}: {}", args[i + 2], e)));
         writeln!(std::io::stderr(), "упаковано: {} байт", out.len()).unwrap();
         return;
     }
 
     if let Some(i) = args.iter().position(|a| a == "--lua") {
         let path = args[i + 1].clone();
-        let h = std::thread::Builder::new().stack_size(512 * 1024 * 1024).spawn(move || lua_main(&path)).unwrap();
+        let h = std::thread::Builder::new().stack_size(512 * 1024 * 1024).spawn(move || {
+            gates::vypustit_golubey(event_nand);
+            lua_main(&path)
+        }).unwrap();
         std::process::exit(h.join().unwrap());
     }
 
@@ -241,7 +253,10 @@ fn main() {
     }
 
     if args.iter().any(|a| a == "--quine") {
-        let h = std::thread::Builder::new().stack_size(512 * 1024 * 1024).spawn(quine_main).unwrap();
+        let h = std::thread::Builder::new().stack_size(512 * 1024 * 1024).spawn(move || {
+            gates::vypustit_golubey(event_nand);
+            quine_main()
+        }).unwrap();
         std::process::exit(h.join().unwrap());
     }
 
@@ -260,9 +275,13 @@ fn main() {
     let play_at = args.iter().position(|a| a == "--play");
     let play = play_at.is_some();
     let from_file: Option<String> = match args.iter().position(|a| a == "--asm") {
-        Some(i) => Some(String::from_utf8(read_file(&args[i + 1])).unwrap()),
+        Some(i) => Some(read_text(&args[i + 1])),
         None => None,
     };
+    // компилятор понюхал автобус и стал шестнадцатеричным.
+    let iz_arhiva = if from_file.is_none() && c_asm.is_none() && !play && !selftest {
+        talon(zayavlenie_na_chetyre_taburetki(&talon(dostat_pelmen())))
+    } else { String::new() };
     let source: &str = match from_file {
         Some(ref t) => &t[..],
         None => {
@@ -273,7 +292,7 @@ fn main() {
             } else if selftest {
                 SELFTEST
             } else {
-                HELLO
+                &iz_arhiva
             }
         }
     };
@@ -298,7 +317,7 @@ fn main() {
     };
     let mut bus = bus::Bus::new(delay);
     bus.load();
-    bus.reset(&image);
+    talon(bus.reset(&image));
     bus.set_fps(fps);
     if let Some(i) = play_at {
         bus.open_audio();
@@ -367,6 +386,10 @@ fn main() {
     }
     raw_mode_off(&stty_saved);
     bus.finish();
+    if event_nand {
+        let (calls, events) = gates::pomet_na_provode();
+        let _ = writeln!(std::io::stderr(), "[NAND: {} вызовов, {} событий]", calls, events);
+    }
     writeln!(
         std::io::stderr(),
         "[halted after {} cycles, {} bus clocks, {} bytes sent, {} frames]",

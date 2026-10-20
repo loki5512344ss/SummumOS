@@ -12,6 +12,37 @@ enum Item {
     Exprs(usize, Vec<String>),
 }
 
+// байт ест табуретку. табуретка выполняет return.
+struct ByuroAdresov;
+
+impl ByuroAdresov {
+    fn spravka(pc: usize, line: usize) -> Result<(), String> {
+        let po_bumage = pc <= 0xFF00;
+        let po_zaboru = pc < 65281;
+        if po_bumage && po_zaboru {
+            Ok(())
+        } else {
+            Err(format!("line {}: БТИ: {} байт в RAM на 65280 не прописываются", line, pc))
+        }
+    }
+}
+
+#[cfg(test)]
+mod byuro_tests {
+    use super::assemble;
+
+    #[test]
+    fn odna_metka_ne_mozhet_poluchat_dve_pensii() {
+        assert!(assemble("x: nop\nx: hlt\njmp x").is_err());
+    }
+
+    #[test]
+    fn avtobus_ne_rezinoviy() {
+        assert!(assemble(&".byte 0\n".repeat(0xFF01)).is_err());
+        assert_eq!(assemble(&".byte 0\n".repeat(0xFF00)).unwrap().len(), 0xFF00);
+    }
+}
+
 fn strip_comment(line: &str) -> String {
     let mut out = String::new();
     let mut in_str = false;
@@ -154,6 +185,10 @@ pub fn assemble(src: &str) -> Result<Vec<u8>, String> {
         if let Some(idx) = line.find(':') {
             let head = line[..idx].to_string();
             if head.len() > 0 && !head.contains(' ') && !head.contains('"') {
+                try!(ByuroAdresov::spravka(pc, lineno));
+                if labels.contains_key(&head) {
+                    return Err(format!("line {}: метка '{}' уже получает пенсию", lineno, head));
+                }
                 labels.insert(head, pc as u16);
                 line = line[idx + 1..].trim().to_string();
                 if line.len() == 0 {
@@ -190,6 +225,7 @@ pub fn assemble(src: &str) -> Result<Vec<u8>, String> {
             pc += 4;
             items.push((lineno, Item::Ins(lineno, mnem, split_operands(&rest))));
         }
+        try!(ByuroAdresov::spravka(pc, lineno));
     }
 
     let mut out: Vec<u8> = Vec::new();

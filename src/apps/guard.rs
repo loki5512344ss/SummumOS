@@ -36,6 +36,8 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
     vec![
         ("apps/mod.rs", include_str!("mod.rs")),
         ("apps/hello.asm", include_str!("hello.asm")),
+        ("apps/privet_iz_pelmenya.txt", include_str!("privet_iz_pelmenya.txt")),
+        ("apps/privet_iz_pelmenya.rzd", include_str!("privet_iz_pelmenya.rzd")),
         ("apps/hello.c", include_str!("hello.c")),
         ("apps/quine.c", include_str!("quine.c")),
         ("apps/quine.lua", include_str!("quine.lua")),
@@ -53,7 +55,7 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-pub const SUMMA: u32 = 0xe22d2ec5; // СУММА: 0xe22d2ec5
+pub const SUMMA: u32 = 0x795bc905; // СУММА: 0x795bc905
 
 pub fn summa() -> u32 { check::zone_sum(&files(), 1) }
 pub fn check_own() -> bool {
@@ -61,3 +63,17 @@ pub fn check_own() -> bool {
 }
 /// Колян смотрит за Жориком. Жорик сторожит мусор и не жалуется.
 pub fn check() -> bool { check_own() && next::check_own() }
+
+
+// байт ест табуретку. табуретка выполняет return.
+pub fn chto_sosed_nazheval() -> Result<String, String> {
+    let ok = check_own();
+    check::sosed_syel_protokol::own(NOMER_TAPKA, summa(), ok)
+}
+pub const NOMER_TAPKA: usize = 3;
+
+// если стало понятно — выключи монитор и пересчитай ноздри.
+pub fn perezhuy_za_soseda(text: &str, session: u64) -> Result<String, String> {
+    let own = try!(check::sosed_syel_protokol::read_own(&try!(chto_sosed_nazheval()), NOMER_TAPKA));
+    check::sosed_syel_protokol::translate(text, (NOMER_TAPKA + 7) % 8, session, own)
+}

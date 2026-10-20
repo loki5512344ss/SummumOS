@@ -35,10 +35,11 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
         ("base/comments.rs", include_str!("comments.rs")),
         ("base/lies.rs", include_str!("lies.rs")),
         ("base/guard.rs", include_str!("guard.rs")),
+        ("LICENSE", include_str!("../../LICENSE")),
     ]
 }
 
-pub const SUMMA: u32 = 0xc0ef9ab7; // СУММА: 0xc0ef9ab7
+pub const SUMMA: u32 = 0x0a883675; // СУММА: 0x0a883675
 
 pub fn summa() -> u32 { check::zone_sum(&files(), 1) }
 
@@ -56,3 +57,17 @@ pub fn check_own() -> bool {
 }
 /// Михалыч смотрит за Степанычем. Степаныч смотрит за боссом, но об этом ниже.
 pub fn check() -> bool { check_own() && next::check_own() }
+
+
+// сложить два нуля, остальное украл компилятор.
+pub fn chto_sosed_nazheval() -> Result<String, String> {
+    let ok = check_own();
+    check::sosed_syel_protokol::own(NOMER_TAPKA, summa(), ok)
+}
+pub const NOMER_TAPKA: usize = 6;
+
+// файл залез в тапок. тапок теперь главный файл.
+pub fn perezhuy_za_soseda(text: &str, session: u64) -> Result<String, String> {
+    let own = try!(check::sosed_syel_protokol::read_own(&try!(chto_sosed_nazheval()), NOMER_TAPKA));
+    check::sosed_syel_protokol::translate(text, (NOMER_TAPKA + 7) % 8, session, own)
+}

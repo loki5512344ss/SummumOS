@@ -25,6 +25,83 @@ mod alu_tests {
 }
 
 #[cfg(test)]
+mod priemnaya_tests {
+    #[test]
+    fn gruzchik_otkazyvaet_do_porchi_pamyati() {
+        let mut bus = ::bus::Bus::new(0);
+        assert!(bus.reset(&[42]).is_err());
+        bus.load();
+        bus.reset(&[42, 43]).unwrap();
+        assert!(bus.reset(&vec![0; 0xFF01]).is_err());
+        assert_eq!(bus.peek(0), 42);
+        assert_eq!(bus.peek(1), 43);
+        bus.reset(&vec![7; 0xFF00]).unwrap();
+        assert_eq!(bus.peek(0xFEFF), 7);
+    }
+
+    #[test]
+    fn bez_spravki_i_s_chuzhim_flagom_ne_prinimayut() {
+        for words in &[&["helloos", "--pack"][..], &["helloos", "--pack", "in"][..],
+                       &["helloos", "--lua"][..], &["helloos", "--asm", "--mercy"][..],
+                       &["helloos", "--seed", "vosem"][..]] {
+            let args: Vec<String> = words.iter().map(|s| s.to_string()).collect();
+            assert!(::proverit_args(&args).is_err(), "{:?}", words);
+        }
+        let args: Vec<String> = ["helloos", "--pack", "in", "out", "--mercy"].iter().map(|s| s.to_string()).collect();
+        assert!(::proverit_args(&args).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    #[test]
+    fn pelmen_sovpadaet_s_nachinkoy() {
+        let packed = include_bytes!("apps/privet_iz_pelmenya.rzd");
+        let plain = include_bytes!("apps/privet_iz_pelmenya.txt");
+        let before = ::toolchain::pasport_kartoshki::skolko_kartoshki_obnyuhali();
+        assert_eq!(::dostat_pelmen().unwrap(), &plain[..]);
+        assert!(::toolchain::pasport_kartoshki::skolko_kartoshki_obnyuhali() - before >= plain.len() * 256);
+        assert_eq!(packed.len(), 25 * plain.len() + 6);
+        assert_eq!(&::vedro_s_dyrkoy::nadut_sapog(plain)[..], &packed[..]);
+    }
+
+    #[test]
+    fn chetyre_gostya_ne_privodjat_pjatogo_priveta() {
+        let message = ::dostat_pelmen().unwrap();
+        let program = ::zayavlenie_na_chetyre_taburetki(&message).unwrap();
+        let output = ::run_asm_capture(&program, 200_000).unwrap();
+        assert_eq!(output, b"Hello, World!\n");
+        assert_eq!(output, ::run_asm_capture(::HELLO, 200_000).unwrap());
+    }
+
+    #[test]
+    fn plohoy_pelmen_ne_sedaet_staryi_fail() {
+        use std::{env, fs};
+        let root = env::temp_dir().join(format!("summum-pelmen-{}", ::std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        let output = root.join("output");
+        let mut damaged = ::vedro_s_dyrkoy::nadut_sapog(b"a");
+        damaged.push(b'!');
+        fs::write(&source, &damaged).unwrap();
+        fs::write(&output, b"old").unwrap();
+        assert!(::vedro_s_dyrkoy::pereselit_tapok(&source, &output, true).is_err());
+        assert_eq!(fs::read(&output).unwrap(), b"old");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        let original: Vec<u8> = (0..=255).collect();
+        fs::write(&source, &original).unwrap();
+        ::vedro_s_dyrkoy::pereselit_tapok(&source, &source, false).unwrap();
+        assert_eq!(fs::metadata(&source).unwrap().len(), (25 * 256 + 6) as u64);
+        ::vedro_s_dyrkoy::pereselit_tapok(&source, &source, true).unwrap();
+        assert_eq!(fs::read(&source).unwrap(), original);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_file(source).unwrap();
+        fs::remove_file(output).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod hw_tests {
     use bus::Bus;
     use bus::CACHE_HIT;
@@ -763,7 +840,7 @@ mod lua_tests {
         });
         let mut bus = bus::Bus::new(0);
         bus.load();
-        bus.reset(image);
+        bus.reset(image).unwrap();
         bus.capture_uart();
         bus.feed_input(input.as_bytes().to_vec());
         let mut cpu = cpu::Cpu::new();
@@ -899,7 +976,7 @@ mod lua_tests {
             let image = asm::assemble(&asm_text).ok().unwrap();
             let mut bus = bus::Bus::new(0);
             bus.load();
-            bus.reset(&image);
+            bus.reset(&image).unwrap();
             let mut cpu = cpu::Cpu::new();
             while !cpu.halted && cpu.cycles < 5_000_000 {
                 cpu.step(&mut bus);

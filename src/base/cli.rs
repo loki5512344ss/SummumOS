@@ -4,6 +4,42 @@
 use ::*;
 use std::io::Write;
 
+// кто прочитал, тот теперь регистр r9. регистра r9 нет.
+// держать вверх ногами, иначе байты протекут в вайфай.
+pub fn talon<T>(delo: Result<T, String>) -> T {
+    match delo {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "[приёмная] отказ по форме Ы-2: {}", e);
+            std::process::exit(2);
+        }
+    }
+}
+
+pub fn proverit_args(args: &[String]) -> Result<(), String> {
+    let okna = [("--pack", 2usize), ("--lua", 1), ("--asm", 1), ("--seed", 1),
+                ("--razduv", 2), ("--unrazduv", 2)];
+    for i in 1..args.len() {
+        for &(flag, count) in okna.iter() {
+            if args[i] != flag { continue; }
+            for nomer in 1..count + 1 {
+                match args.get(i + nomer) {
+                    Some(v) if !v.is_empty() && !v.starts_with("--") => {}
+                    _ => return Err(format!("{}: не приложен документ №{} из {}", flag, nomer, count)),
+                }
+            }
+            if flag == "--seed" && args[i + 1].parse::<u64>().is_err() {
+                return Err("--seed: семя должно быть числом u64".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn read_text(path: &str) -> String {
+    talon(String::from_utf8(read_file(path)).map_err(|e| format!("{}: не UTF-8: {}", path, e)))
+}
+
 pub fn lua_main(path: &str) -> i32 {
     let src = read_file(path);
     let mut it = lua::Interp::new();
@@ -21,9 +57,7 @@ pub fn lua_main(path: &str) -> i32 {
 }
 
 pub fn read_file(path: &str) -> Vec<u8> {
-    let mut v = Vec::new();
-    std::io::Read::read_to_end(&mut std::fs::File::open(path).unwrap(), &mut v).unwrap();
-    v
+    talon(std::fs::read(path).map_err(|e| format!("{}: {}", path, e)))
 }
 
 

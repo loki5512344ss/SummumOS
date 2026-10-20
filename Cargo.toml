@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["nobody <nobody@localhost>"]
 edition = "2015"
 default-run = "helloos"
+license-file = "LICENSE"
 
 [[bin]]
 name = "helloos"
@@ -44,6 +45,10 @@ path = "tools/sndcmp.rs"
 [[bin]]
 name = "seal"
 path = "tools/seal.rs"
+
+[[bin]]
+name = "nasos"
+path = "tools/nasos_dlya_tapka.rs"
 
 [profile.release]
 opt-level = 1

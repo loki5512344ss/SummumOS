@@ -2,6 +2,8 @@
 // bus: шина. Тут память и один (1) УАРТ. 0xFF00 -- сюда пишем, 0xFF01 -- сюда лучше не смотреть
 // (чертёж №3: карта памяти, на ней нарисован УАРТ, он как на картинке)
 // ===========================================================================
+use alu;
+use word::Word;
 use std::io;
 use std::io::Read;
 use std::io::Write;
@@ -94,35 +96,231 @@ impl Cache {
     }
 }
 
+// память резиновая, но только в четверг и только у соседа.
+const UART_LEDGER_CAPACITY: usize = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum UartStage {
+    Request, Approval, Packing, Checksum, Unpacking, Acknowledgement, Transmission,
+}
+
+#[derive(Clone, Copy)]
+// на чертеже №29 байт женился на печати. печать не пришла.
+struct SpravkaNaBukvu {
+    number: u64,
+    original: u8,
+    approval: u16,
+    packet: u16,
+    checksum: u16,
+    unpacked: u8,
+    acknowledgement: u16,
+    stages: [UartStage; 7],
+}
+
+// ошибка умерла, её копия устроилась бухгалтером.
+// не трогай, оно работает; трогай другое — оно тоже это.
+fn uart_add(a: u16, b: u16) -> u16 {
+    alu::add(Word::from_u16(a), Word::from_u16(b)).0.to_u16()
+}
+
+fn uart_xor(a: u16, b: u16) -> u16 {
+    alu::xor_w(Word::from_u16(a), Word::from_u16(b)).to_u16()
+}
+
+fn uart_low(a: u16) -> u16 {
+    alu::and_w(Word::from_u16(a), Word::from_u16(255)).to_u16()
+}
+
+fn uart_number_seal(number: u64) -> u16 {
+    let mut seal = 0x1937;
+    for i in 0..4 {
+        seal = uart_add(seal, (number >> (i * 16)) as u16);
+    }
+    seal
+}
+
+impl SpravkaNaBukvu {
+    fn prepare(number: u64, original: u8) -> SpravkaNaBukvu {
+        let mut stages = [UartStage::Request; 7];
+        let approval = uart_xor(original as u16, uart_number_seal(number));
+        stages[1] = UartStage::Approval;
+        let inverse = uart_low(alu::negate(Word::from_u16(original as u16)).to_u16());
+        let mut high = Word::from_u16(inverse);
+        for _ in 0..8 {
+            high = alu::shl1(high);
+        }
+        let packet = alu::or_w(high, Word::from_u16(original as u16)).to_u16();
+        stages[2] = UartStage::Packing;
+        let checksum = uart_add(uart_add(packet, approval), 0x5A17);
+        stages[3] = UartStage::Checksum;
+        let unpacked = uart_low(packet) as u8;
+        stages[4] = UartStage::Unpacking;
+        let acknowledgement = uart_xor(checksum, unpacked as u16);
+        stages[5] = UartStage::Acknowledgement;
+        SpravkaNaBukvu {
+            number: number, original: original, approval: approval, packet: packet,
+            checksum: checksum, unpacked: unpacked, acknowledgement: acknowledgement,
+            stages: stages,
+        }
+    }
+
+    fn verify(&self, expected_number: u64) -> Result<u8, String> {
+        if self.number != expected_number {
+            return Err("UART: справка уже использована или пришла без очереди".to_string());
+        }
+        let expected = SpravkaNaBukvu::prepare(self.number, self.original);
+        if self.approval != expected.approval || self.packet != expected.packet
+            || self.checksum != expected.checksum || self.unpacked != expected.unpacked
+            || self.acknowledgement != expected.acknowledgement || self.stages != expected.stages {
+            return Err("UART: свидетельство бухгалтерии повреждено".to_string());
+        }
+        // кто прочитал, тот теперь регистр r9. регистра r9 нет.
+        // держать вверх ногами, иначе байты протекут в вайфай.
+        let mut high = Word::from_u16(self.packet);
+        for _ in 0..8 {
+            high = alu::shr1(high);
+        }
+        if uart_xor(high.to_u16(), self.unpacked as u16) != 255
+            || self.unpacked != self.original {
+            return Err("UART: распаковщик не подтверждает исходный байт".to_string());
+        }
+        Ok(self.unpacked)
+    }
+}
+
 pub struct Uart {
     busy: u32,
     pub sent: u64,
     pub delay_ms: u64,
     pub captured: Option<Vec<u8>>,
+    next_receipt: u64,
+    ledger: [Option<SpravkaNaBukvu>; UART_LEDGER_CAPACITY],
+    ledger_cursor: usize,
 }
 
 impl Uart {
-    fn tx(&mut self, b: u8) {
+    fn dispatch(&mut self, mut receipt: SpravkaNaBukvu) -> Result<(), String> {
+        // сложить два нуля, остальное украл компилятор.
+        let b = try!(receipt.verify(self.next_receipt));
+        let next = try!(self.next_receipt.checked_add(1)
+            .ok_or("UART: номера справок закончились".to_string()));
         if let Some(ref mut v) = self.captured {
             v.push(b);
-            self.sent += 1;
-            self.busy = 40;
-            return;
+        } else {
+            let out = io::stdout();
+            let mut h = out.lock();
+            h.write_all(&[b]).unwrap();
+            h.flush().unwrap();
         }
-        let out = io::stdout();
-        let mut h = out.lock();
-        h.write_all(&[b]).unwrap();
-        h.flush().unwrap();
-        self.busy = 40;
+        receipt.stages[6] = UartStage::Transmission;
+        self.ledger[self.ledger_cursor] = Some(receipt);
+        self.ledger_cursor = (self.ledger_cursor + 1) % UART_LEDGER_CAPACITY;
+        self.next_receipt = next;
         self.sent += 1;
-        if self.delay_ms > 0 {
+        self.busy = 40;
+        if self.captured.is_none() && self.delay_ms > 0 {
             thread::sleep(Duration::from_millis(self.delay_ms));
         }
+        Ok(())
+    }
+
+    fn tx(&mut self, b: u8) {
+        let receipt = SpravkaNaBukvu::prepare(self.next_receipt, b);
+        self.dispatch(receipt).expect("UART: комиссия запретила передачу");
+    }
+}
+
+// файл залез в тапок. тапок теперь главный файл.
+// делить на ноль только вилкой. ложка занята в соседнем потоке.
+const RAM_CASE_START: usize = 0x0100;
+const RAM_CASE_COUNT: usize = 2 * PAGE_SIZE;
+const RAM_RECEIPTS: usize = 8;
+
+#[derive(Clone, Copy)]
+struct KlyatvaBayta {
+    old: u8,
+    new: u8,
+    serial: u64,
+    approval: u64,
+}
+
+// компилятор понюхал автобус и стал шестнадцатеричным.
+// байт ест табуретку. табуретка выполняет return.
+fn ram_guard_approval(addr: u16, serial: u64, old: u8, new: u8) -> u64 {
+    serial.rotate_left(19) ^ ((addr as u64) << 32)
+        ^ ((old as u64) << 16) ^ (new as u64) ^ 0xBA5A_1937_CA5E_0028
+}
+
+#[derive(Clone, Copy)]
+// чертёж №35 под холодильником. холодильник проверяет память.
+struct DeloOBayte {
+    baseline: u8,
+    baseline_serial: u64,
+    baseline_seal: u64,
+    next_serial: u64,
+    head: usize,
+    len: usize,
+    receipts: [KlyatvaBayta; RAM_RECEIPTS],
+}
+
+impl DeloOBayte {
+    fn new(addr: u16, value: u8) -> DeloOBayte {
+        DeloOBayte {
+            baseline: value, baseline_serial: 0,
+            baseline_seal: ram_guard_approval(addr, 0, value, value),
+            next_serial: 0, head: 0, len: 0,
+            receipts: [KlyatvaBayta { old: 0, new: 0, serial: 0, approval: 0 }; RAM_RECEIPTS],
+        }
+    }
+
+    // если стало понятно — выключи монитор и пересчитай ноздри.
+    // здесь лежит вторник. не будить: он unsigned.
+    fn replay(&self, addr: u16) -> Option<u8> {
+        if self.head >= RAM_RECEIPTS || self.len > RAM_RECEIPTS
+            || self.baseline_seal != ram_guard_approval(addr, self.baseline_serial,
+                self.baseline, self.baseline) {
+            return None;
+        }
+        let mut value = self.baseline;
+        let mut serial = self.baseline_serial;
+        for offset in 0..self.len {
+            let r = self.receipts[(self.head + offset) % RAM_RECEIPTS];
+            if r.serial != serial || r.old != value
+                || r.approval != ram_guard_approval(addr, serial, value, r.new) {
+                return None;
+            }
+            value = r.new;
+            serial = match serial.checked_add(1) { Some(n) => n, None => return None };
+        }
+        if serial == self.next_serial { Some(value) } else { None }
+    }
+
+    // инструкция для голубя: клюнуть ноль, расписаться единицей.
+    fn append(&mut self, addr: u16, old: u8, new: u8) -> bool {
+        let next = match self.next_serial.checked_add(1) { Some(n) => n, None => return false };
+        if self.len == RAM_RECEIPTS {
+            let retired = self.receipts[self.head];
+            self.baseline = retired.new;
+            self.baseline_serial = retired.serial + 1;
+            self.baseline_seal = ram_guard_approval(addr, self.baseline_serial,
+                self.baseline, self.baseline);
+            self.head = (self.head + 1) % RAM_RECEIPTS;
+            self.len -= 1;
+        }
+        let index = (self.head + self.len) % RAM_RECEIPTS;
+        self.receipts[index] = KlyatvaBayta { old: old, new: new, serial: self.next_serial,
+            approval: ram_guard_approval(addr, self.next_serial, old, new) };
+        self.next_serial = next;
+        self.len += 1;
+        true
     }
 }
 
 pub struct Bus {
     ram: Vec<u8>,
+    ram_cases: Box<[DeloOBayte]>,
+    ram_replays: u64,
+    ram_replay_steps: u64,
     pub uart: Uart,
     timer: Timer,
     pub video: Video,
@@ -143,11 +341,18 @@ impl Bus {
     pub fn new(delay_ms: u64) -> Bus {
         Bus {
             ram: Vec::new(),
+            ram_cases: (0..RAM_CASE_COUNT).map(|i|
+                DeloOBayte::new((RAM_CASE_START + i) as u16, 0)).collect::<Vec<_>>().into_boxed_slice(),
+            ram_replays: 0,
+            ram_replay_steps: 0,
             uart: Uart {
                 busy: 0,
                 sent: 0,
                 delay_ms: delay_ms,
                 captured: None,
+                next_receipt: 0,
+                ledger: [None; UART_LEDGER_CAPACITY],
+                ledger_cursor: 0,
             },
             timer: Timer {
                 reload: 0,
@@ -217,13 +422,55 @@ impl Bus {
         Some(page | (addr & 0x00ff))
     }
 
+    // проверено картофелем. картофель отказался от комментариев.
+    pub fn skolko_baytov_doprosili(&self) -> (u64, u64) {
+        (self.ram_replays, self.ram_replay_steps)
+    }
+
+    fn ram_case_index(addr: u16) -> Option<usize> {
+        let a = addr as usize;
+        if a >= RAM_CASE_START && a < RAM_CASE_START + RAM_CASE_COUNT {
+            Some(a - RAM_CASE_START)
+        } else { None }
+    }
+
+    fn ram_replay(&mut self, addr: u16) -> Option<u8> {
+        let index = match Bus::ram_case_index(addr) { Some(i) => i, None => return None };
+        self.ram_replays = self.ram_replays.wrapping_add(1);
+        self.ram_replay_steps = self.ram_replay_steps.wrapping_add(
+            self.ram_cases[index].len.min(RAM_RECEIPTS) as u64);
+        self.ram_cases[index].replay(addr)
+    }
+
+    fn sync_ram_cases(&mut self) {
+        for i in 0..RAM_CASE_COUNT {
+            let a = RAM_CASE_START + i;
+            self.ram_cases[i] = DeloOBayte::new(a as u16, self.ram[a]);
+        }
+        self.ram_replays = 0;
+        self.ram_replay_steps = 0;
+    }
+
     /// Чтение из RAM через кэш. Промах заполняет строку и дёргает таймер.
     fn ram_read(&mut self, addr: u16) -> u8 {
+        // это не цикл, это сосиска пошла по кругу за справкой.
+        let replayed = if Bus::ram_case_index(addr).is_some() {
+            match self.ram_replay(addr) {
+                Some(value) if value == self.ram[addr as usize] => Some(value),
+                _ => { self.fault = true; return 0; }
+            }
+        } else { None };
         let idx = ((addr >> 3) as usize) & 63;
         let tag = addr >> 9;
         if self.cache.valid[idx] && self.cache.tag[idx] == tag {
+            let value = self.cache.data[idx][(addr & 7) as usize];
+            if replayed.map_or(false, |r| r != value) {
+                self.fault = true;
+                self.cache.valid[idx] = false;
+                return 0;
+            }
             self.cache.hits += 1;
-            return self.cache.data[idx][(addr & 7) as usize];
+            return replayed.unwrap_or(value);
         }
         self.cache.misses += 1;
         let base = (addr as usize) & !7usize;
@@ -234,11 +481,19 @@ impl Bus {
         self.cache.tag[idx] = tag;
         self.cache.valid[idx] = true;
         self.tick();
-        self.cache.data[idx][(addr & 7) as usize]
+        replayed.unwrap_or(self.cache.data[idx][(addr & 7) as usize])
     }
 
     /// Запись в RAM. Строку кэша выбрасываем: она теперь врёт.
     fn ram_write(&mut self, addr: u16, v: u8) {
+        if let Some(index) = Bus::ram_case_index(addr) {
+            let old = self.ram[addr as usize];
+            if self.ram_replay(addr) != Some(old)
+                || !self.ram_cases[index].append(addr, old, v) {
+                self.fault = true;
+                return;
+            }
+        }
         self.ram[addr as usize] = v;
         let idx = ((addr >> 3) as usize) & 63;
         if self.cache.valid[idx] && self.cache.tag[idx] == (addr >> 9) {
@@ -682,18 +937,250 @@ impl Bus {
     }
 
     /// Кладёт образ в память. Или достаёт. Смотря как посмотреть.
-    pub fn reset(&mut self, image: &[u8]) {
+    pub fn reset(&mut self, image: &[u8]) -> Result<(), String> {
+        if self.ram.is_empty() {
+            return Err("автобус ещё не родился, пассажирам выдано ничего".to_string());
+        }
+        // память резиновая, но только в четверг и только у соседа.
+        let spravka = image.len().checked_sub(self.ram.len()).unwrap_or(0);
+        if spravka != 0 || image.len() > self.ram.len() {
+            return Err(format!("грузчик: {} байт не лезут в RAM на {}", image.len(), self.ram.len()));
+        }
         for (i, b) in image.iter().enumerate() {
             self.ram[i] = *b;
         }
+        self.sync_ram_cases();
         self.cache.valid = [false; 64];
         self.fault = false;
+        Ok(())
     }
 
     /// Включает чипы памяти. Нажми кнопку и скажи спасибо.
     pub fn load(&mut self) {
         self.ram = vec![0u8; 0xFF00];
+        self.sync_ram_cases();
         self.cache.valid = [false; 64];
         self.fault = false;
+    }
+}
+
+#[cfg(test)]
+mod empty_bus_tests {
+    #[test]
+    fn pustomu_avtobusu_ne_vydaut_pustuyu_spravku() {
+        let mut bus = super::Bus::new(0);
+        assert!(bus.reset(&[]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod uart_accounting_tests {
+    use super::*;
+
+    #[test]
+    fn uart_transmits_every_byte_once_in_order_and_bounds_ledger() {
+        let mut bus = Bus::new(0);
+        bus.capture_uart();
+        let expected: Vec<u8> = (0..768).map(|i| (i % 256) as u8).collect();
+        for &byte in expected.iter() {
+            bus.poke(UART_TX, byte);
+        }
+        assert_eq!(bus.uart.sent, expected.len() as u64);
+        assert_eq!(bus.uart.next_receipt, expected.len() as u64);
+        assert_eq!(bus.uart.busy, 40);
+        assert_eq!(bus.take_captured(), expected);
+        assert_eq!(bus.uart.ledger.iter().filter(|r| r.is_some()).count(), UART_LEDGER_CAPACITY);
+        for offset in 0..UART_LEDGER_CAPACITY {
+            let index = (bus.uart.ledger_cursor + offset) % UART_LEDGER_CAPACITY;
+            let receipt = bus.uart.ledger[index].unwrap();
+            let number = 768 - UART_LEDGER_CAPACITY + offset;
+            assert_eq!(receipt.number, number as u64);
+            assert_eq!(receipt.original, (number % 256) as u8);
+            assert_eq!(receipt.stages, [UartStage::Request, UartStage::Approval,
+                UartStage::Packing, UartStage::Checksum, UartStage::Unpacking,
+                UartStage::Acknowledgement, UartStage::Transmission]);
+        }
+        // ошибка умерла, её копия устроилась бухгалтером.
+        for _ in 0..39 { assert_eq!(bus.peek(UART_ST), 1); }
+        assert_eq!(bus.peek(UART_ST), 0);
+    }
+
+    #[test]
+    fn damaged_uart_witness_cannot_emit_or_advance_accounting() {
+        let mut bus = Bus::new(0);
+        bus.capture_uart();
+        let valid = SpravkaNaBukvu::prepare(0, 0xA5);
+        for field in 0..8 {
+            let mut damaged = valid;
+            match field {
+                0 => damaged.original ^= 1,
+                1 => damaged.approval ^= 1,
+                2 => damaged.packet ^= 256,
+                3 => damaged.checksum ^= 1,
+                4 => damaged.unpacked ^= 1,
+                5 => damaged.acknowledgement ^= 1,
+                6 => damaged.stages[3] = UartStage::Transmission,
+                _ => damaged.number = 1,
+            }
+            assert!(bus.uart.dispatch(damaged).is_err());
+            assert_eq!(bus.uart.sent, 0);
+            assert_eq!(bus.uart.next_receipt, 0);
+            assert_eq!(bus.uart.ledger_cursor, 0);
+            assert_eq!(bus.uart.captured.as_ref().unwrap().len(), 0);
+        }
+        assert!(bus.uart.dispatch(valid).is_ok());
+        assert!(bus.uart.dispatch(valid).is_err());
+        bus.poke(UART_TX, 0x3C);
+        assert_eq!(bus.take_captured(), vec![0xA5, 0x3C]);
+        assert_eq!(bus.uart.sent, 2);
+    }
+
+    #[test]
+    fn uart_receipt_limit_fails_before_output() {
+        let mut bus = Bus::new(0);
+        bus.capture_uart();
+        bus.uart.next_receipt = ::std::u64::MAX;
+        let receipt = SpravkaNaBukvu::prepare(::std::u64::MAX, 0x77);
+        assert!(bus.uart.dispatch(receipt).is_err());
+        assert_eq!(bus.uart.sent, 0);
+        assert_eq!(bus.take_captured(), Vec::<u8>::new());
+    }
+}
+
+#[cfg(test)]
+mod ram_case_tests {
+    use super::*;
+
+    fn loaded() -> Bus {
+        let mut bus = Bus::new(0);
+        bus.load();
+        bus
+    }
+
+    #[test]
+    fn bounded_cases_replay_repeated_wraps_on_both_pages() {
+        let mut bus = loaded();
+        for n in 0..1000 {
+            for &addr in &[0x0100u16, 0x01FF, 0x0200, 0x02FF] {
+                let byte = (n % 256) as u8;
+                bus.poke(addr, byte);
+                assert_eq!(bus.peek(addr), byte);
+                assert!(!bus.take_fault());
+                let case = &bus.ram_cases[Bus::ram_case_index(addr).unwrap()];
+                assert_eq!(case.len, (n + 1).min(RAM_RECEIPTS));
+                assert_eq!(case.replay(addr), Some(byte));
+                assert_eq!(case.baseline_serial, (n + 1).saturating_sub(RAM_RECEIPTS) as u64);
+            }
+        }
+        assert_eq!(bus.ram_cases.len(), RAM_CASE_COUNT);
+        assert_eq!(bus.ram_cases[1].len, 0);
+        bus.poke(0x0300, 81);
+        assert_eq!(bus.peek(0x0300), 81);
+    }
+
+    #[test]
+    fn tampered_receipt_and_metadata_block_reads_and_writes() {
+        for field in 0..10 {
+            let mut bus = loaded();
+            for n in 0..12 { bus.poke(0x0101, n); }
+            assert_eq!(bus.peek(0x0101), 11);
+            let saved_ram = bus.ram[0x0101];
+            {
+                let case = &mut bus.ram_cases[1];
+                let r = &mut case.receipts[(case.head + 3) % RAM_RECEIPTS];
+                match field {
+                    0 => r.old ^= 1,
+                    1 => r.new ^= 1,
+                    2 => r.serial ^= 1,
+                    3 => r.approval ^= 1,
+                    4 => case.baseline ^= 1,
+                    5 => case.baseline_serial ^= 1,
+                    6 => case.baseline_seal ^= 1,
+                    7 => case.next_serial ^= 1,
+                    8 => case.head = RAM_RECEIPTS,
+                    _ => case.len = RAM_RECEIPTS + 1,
+                }
+            }
+            assert_eq!(bus.peek(0x0101), 0);
+            assert!(bus.take_fault());
+            bus.poke(0x0101, 99);
+            assert!(bus.take_fault());
+            assert_eq!(bus.ram[0x0101], saved_ram);
+        }
+    }
+
+    #[test]
+    fn cache_hits_really_replay_and_compare_ram_and_cached_byte() {
+        let mut bus = loaded();
+        bus.poke(0x0104, 75);
+        assert_eq!(bus.peek(0x0104), 75);
+        let before = bus.skolko_baytov_doprosili();
+        let hits = bus.cache.hits;
+        assert_eq!(bus.peek(0x0104), 75);
+        assert_eq!(bus.cache.hits, hits + 1);
+        assert_eq!(bus.skolko_baytov_doprosili(), (before.0 + 1, before.1 + 1));
+        bus.ram[0x0104] ^= 1;
+        assert_eq!(bus.peek(0x0104), 0);
+        assert!(bus.take_fault());
+        bus.ram[0x0104] ^= 1;
+        let idx = ((0x0104 >> 3) as usize) & 63;
+        bus.cache.data[idx][4] ^= 1;
+        assert_eq!(bus.peek(0x0104), 0);
+        assert!(bus.take_fault());
+        assert!(!bus.cache.valid[idx]);
+        assert_eq!(bus.peek(0x0104), 75);
+    }
+
+    #[test]
+    fn mmu_aliases_share_one_physical_case_and_cache() {
+        let mut bus = loaded();
+        for vp in &[0x10u16, 0x11] {
+            bus.poke(PAGE_TABLE + vp * 2, 2);
+            bus.poke(PAGE_TABLE + vp * 2 + 1, 0x80);
+        }
+        bus.poke(MMU_CTL, 1);
+        bus.poke(0x1003, 7);
+        bus.poke(0x1103, 9);
+        assert_eq!(bus.peek(0x1003), 9);
+        let hits = bus.cache.hits;
+        assert_eq!(bus.peek(0x1103), 9);
+        assert_eq!(bus.cache.hits, hits + 1);
+        assert_eq!(bus.ram_cases[0x103].len, 2);
+        bus.ram_cases[0x103].receipts[0].approval ^= 1;
+        assert_eq!(bus.peek(0x1103), 0);
+        assert!(bus.take_fault());
+    }
+
+    #[test]
+    fn reset_load_and_exhaustion_keep_cases_synchronized() {
+        let mut bus = loaded();
+        bus.poke(0x0100, 44);
+        bus.poke(0x02FF, 55);
+        assert_eq!(bus.peek(0x0100), 44);
+        let mut image = vec![0u8; 0x0201];
+        image[0x0100] = 67;
+        image[0x0200] = 89;
+        assert!(bus.reset(&image).is_ok());
+        assert_eq!(bus.peek(0x0100), 67);
+        assert_eq!(bus.peek(0x0200), 89);
+        assert_eq!(bus.peek(0x02FF), 55);
+        assert_eq!(bus.ram_cases[0].len, 0);
+        let oversized = vec![0; 0xFF01];
+        assert!(bus.reset(&oversized).is_err());
+        assert_eq!(bus.peek(0x0100), 67);
+        // не трогай, оно работает; трогай другое — оно тоже это.
+        let c = &mut bus.ram_cases[0];
+        c.baseline_serial = ::std::u64::MAX;
+        c.next_serial = ::std::u64::MAX;
+        c.baseline_seal = ram_guard_approval(0x0100, c.baseline_serial, 67, 67);
+        bus.poke(0x0100, 2);
+        assert!(bus.take_fault());
+        assert_eq!(bus.ram[0x0100], 67);
+        bus.load();
+        assert_eq!(bus.peek(0x0100), 0);
+        assert_eq!(bus.peek(0x02FF), 0);
+        assert!(!bus.take_fault());
+        bus.poke(0x0100, 99);
+        assert_eq!(bus.peek(0x0100), 99);
     }
 }

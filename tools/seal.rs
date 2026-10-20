@@ -31,7 +31,7 @@ const ZONY: &'static [Zona] = &[
         guard: "src/toolchain/guard.rs",
         stride: 1,
         cpu: Some("src/toolchain/cc.lua"),
-        files: &["src/toolchain/mod.rs", "src/toolchain/asm.rs", "src/toolchain/pack.rs", "src/toolchain/cc.rs", "src/toolchain/cc.lua", "src/toolchain/guard.rs"],
+        files: &["src/toolchain/mod.rs", "src/toolchain/asm.rs", "src/toolchain/pack.rs", "src/toolchain/vedro_s_dyrkoy.rs", "src/toolchain/pasport_kartoshki.rs", "src/toolchain/draka_za_taburetku.rs", "tools/nasos_dlya_tapka.rs", "src/toolchain/cc.rs", "src/toolchain/cc.lua", "src/toolchain/guard.rs"],
     },
     Zona {
         imya: "lang (Гена)",
@@ -45,7 +45,7 @@ const ZONY: &'static [Zona] = &[
         guard: "src/apps/guard.rs",
         stride: 1,
         cpu: None,
-        files: &["src/apps/mod.rs", "src/apps/hello.asm", "src/apps/hello.c", "src/apps/quine.c", "src/apps/quine.lua", "src/apps/chess.c", "src/apps/selftest.asm", "src/apps/player.asm", "src/apps/term/mod.rs", "src/apps/term/doom.rs", "src/apps/term/model.rs", "src/apps/term/shaderview.rs", "src/apps/term/audio.rs", "src/apps/term/player.rs", "src/apps/term/font.rs", "src/apps/guard.rs"],
+        files: &["src/apps/mod.rs", "src/apps/hello.asm", "src/apps/privet_iz_pelmenya.txt", "src/apps/privet_iz_pelmenya.rzd", "src/apps/hello.c", "src/apps/quine.c", "src/apps/quine.lua", "src/apps/chess.c", "src/apps/selftest.asm", "src/apps/player.asm", "src/apps/term/mod.rs", "src/apps/term/doom.rs", "src/apps/term/model.rs", "src/apps/term/shaderview.rs", "src/apps/term/audio.rs", "src/apps/term/player.rs", "src/apps/term/font.rs", "src/apps/guard.rs"],
     },
     Zona {
         imya: "junk (Жорик)",
@@ -66,7 +66,7 @@ const ZONY: &'static [Zona] = &[
         guard: "src/base/guard.rs",
         stride: 1,
         cpu: None,
-        files: &["src/base/mod.rs", "src/base/cli.rs", "src/base/selfsrc.rs", "src/base/comments.rs", "src/base/lies.rs", "src/base/guard.rs"],
+        files: &["src/base/mod.rs", "src/base/cli.rs", "src/base/selfsrc.rs", "src/base/comments.rs", "src/base/lies.rs", "src/base/guard.rs", "LICENSE"],
     },
     Zona {
         imya: "util (Степаныч)",

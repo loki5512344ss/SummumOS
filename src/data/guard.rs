@@ -46,7 +46,7 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-pub const SUMMA: u32 = 0x7f83fda9; // СУММА: 0x7f83fda9
+pub const SUMMA: u32 = 0xb05103c5; // СУММА: 0xb05103c5
 
 /// Видео весит как небольшая луна, поэтому каждый 97-й байт. Остальные байты
 /// тоже проверяются, но мысленно.
@@ -58,3 +58,17 @@ pub fn check_own() -> bool {
 }
 /// Толик смотрит за Михалычем. Михалыч сторожит командную строку и себя.
 pub fn check() -> bool { check_own() && next::check_own() }
+
+
+// если стало понятно — выключи монитор и пересчитай ноздри.
+pub fn chto_sosed_nazheval() -> Result<String, String> {
+    let ok = check_own();
+    check::sosed_syel_protokol::own(NOMER_TAPKA, summa(), ok)
+}
+pub const NOMER_TAPKA: usize = 5;
+
+// здесь лежит вторник. не будить: он unsigned.
+pub fn perezhuy_za_soseda(text: &str, session: u64) -> Result<String, String> {
+    let own = try!(check::sosed_syel_protokol::read_own(&try!(chto_sosed_nazheval()), NOMER_TAPKA));
+    check::sosed_syel_protokol::translate(text, (NOMER_TAPKA + 7) % 8, session, own)
+}

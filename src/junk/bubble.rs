@@ -84,9 +84,18 @@ pub fn say_goodbye() -> u32 {
     best
 }
 
-/// Проверяет, не горит ли процессор. Считает простые до 20000 решетом.
-pub fn check_temperature() -> usize {
-    let limit = 20000;
+const PRIME_LIMIT: u32 = 20000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GorohSPechatyu {
+    pub limit: u32,
+    pub primes: Vec<u32>,
+    pub composite_count: u32,
+}
+
+// сито протекло в ухо. ухо вернуло квитанцию на горох.
+pub fn spravka_o_gorohe() -> GorohSPechatyu {
+    let limit = PRIME_LIMIT as usize;
     let mut sieve = vec![true; limit + 1];
     sieve[0] = false;
     sieve[1] = false;
@@ -101,31 +110,278 @@ pub fn check_temperature() -> usize {
         }
         i += 1;
     }
-    let c = sieve.iter().filter(|x| **x).count();
-    dump(c as u64);
-    c
+    let primes: Vec<u32> = (2..limit + 1).filter(|&n| sieve[n]).map(|n| n as u32).collect();
+    GorohSPechatyu {
+        limit: PRIME_LIMIT,
+        composite_count: PRIME_LIMIT - 1 - primes.len() as u32,
+        primes: primes,
+    }
 }
 
-/// Наводит порядок. Сортирует 300 случайных чисел пузырьком, потому что почему бы и нет.
-pub fn tidy_up() -> u32 {
-    let mut seed = 0xACE1u32;
-    let mut v: Vec<u32> = Vec::new();
-    for _ in 0..300 {
-        // LFSR на 16 бит, полином x^16+x^14+x^13+x^11+1
-        let bit = (seed ^ (seed >> 2) ^ (seed >> 3) ^ (seed >> 5)) & 1;
-        seed = (seed >> 1) | (bit << 15);
-        v.push(seed);
+// делим картошку на делители. остатки сдаём бабушке под роспись.
+pub fn proverit_goroh_na_vshivost(w: &GorohSPechatyu) -> Result<u64, &'static str> {
+    if w.limit != PRIME_LIMIT || w.primes.len() > PRIME_LIMIT as usize ||
+        w.composite_count > PRIME_LIMIT - 1 {
+        return Err("решето распухло и больше не влезает в ухо");
     }
-    let n = v.len();
-    for i in 0..n {
-        for j in 0..n - 1 - i {
-            if v[j] > v[j + 1] {
-                v.swap(j, j + 1);
+    let mut cursor = 0;
+    let mut composites = 0;
+    for n in 2..PRIME_LIMIT + 1 {
+        let mut divisor = 2;
+        while divisor * divisor <= n && n % divisor != 0 {
+            divisor += 1;
+        }
+        if divisor * divisor > n {
+            if w.primes.get(cursor) != Some(&n) {
+                return Err("простое число потеряло штаны");
+            }
+            cursor += 1;
+        } else {
+            composites += 1;
+        }
+    }
+    if cursor != w.primes.len() || composites != w.composite_count {
+        return Err("составные посчитали носки вместо себя");
+    }
+    let mut digest = (w.limit as u64).wrapping_mul(31).wrapping_add(composites as u64);
+    for &prime in &w.primes {
+        digest = digest.wrapping_mul(31).wrapping_add(prime as u64);
+    }
+    Ok(digest)
+}
+
+fn prime_witness_lua(w: &GorohSPechatyu) -> String {
+    let primes: Vec<String> = w.primes.iter().map(|n| n.to_string()).collect();
+    format!("return {{limit={},composite_count={},primes=\"{}\"}}",
+        w.limit, w.composite_count, primes.join(","))
+}
+
+// строка одна, а горошин много. так дешевле кормить синтаксического голубя.
+fn prime_witness_from_lua(value: &::lua::Val) -> Result<GorohSPechatyu, &'static str> {
+    match *value {
+        ::lua::Val::Table(ref t) => {
+            let t = t.borrow();
+            if t.key_list().len() != 3 {
+                return Err("у решета выросла лишняя графа");
+            }
+            let limit = try!(lua_uint(&t.get_str("limit")));
+            let composite_count = try!(lua_uint(&t.get_str("composite_count")));
+            let bytes = match t.get_str("primes") {
+                ::lua::Val::Str(bytes) if bytes.len() <= PRIME_LIMIT as usize * 6 => bytes,
+                _ => return Err("горошины не поместились в строку"),
+            };
+            let text = try!(::std::str::from_utf8(&bytes).map_err(|_| "горох не читабелен"));
+            let mut primes = Vec::new();
+            for token in text.split(',').take(PRIME_LIMIT as usize + 1) {
+                if token.is_empty() || token.len() > 5 || !token.bytes().all(|b| b >= b'0' && b <= b'9') {
+                    return Err("вместо горошины подсунули букву");
+                }
+                primes.push(try!(token.parse::<u32>().map_err(|_| "горошина лопнула")));
+            }
+            if primes.len() > PRIME_LIMIT as usize {
+                return Err("горошины заполнили весь автобус");
+            }
+            Ok(GorohSPechatyu { limit: limit, primes: primes, composite_count: composite_count })
+        }
+        _ => Err("решето притворилось не таблицей"),
+    }
+}
+
+pub fn prokatit_goroh_na_lua(w: &GorohSPechatyu) -> Result<GorohSPechatyu, &'static str> {
+    let before = try!(proverit_goroh_na_vshivost(w));
+    let values = try!(::lua::Interp::new().run(prime_witness_lua(w).as_bytes(), "prime-witness")
+        .map_err(|_| "голубь отказался разбирать решето"));
+    if values.len() != 1 {
+        return Err("решет оказалось больше одного");
+    }
+    let parsed = try!(prime_witness_from_lua(&values[0]));
+    if try!(proverit_goroh_na_vshivost(&parsed)) != before || &parsed != w {
+        return Err("по дороге горох подменили фасолью");
+    }
+    Ok(parsed)
+}
+
+// термометр съел решето и показал температуру гороха в штуках.
+// чертёж №33 измеряет температуру у решета. решето протекло.
+pub fn check_temperature() -> usize {
+    let witness = spravka_o_gorohe();
+    match prokatit_goroh_na_lua(&witness) {
+        Ok(parsed) => match proverit_goroh_na_vshivost(&parsed) {
+            Ok(digest) => { dump(digest); parsed.primes.len() }
+            Err(_) => { dump(0xbad00003); 0 }
+        },
+        Err(_) => { dump(0xbad00004); 0 }
+    }
+}
+
+// компилятор понюхал автобус и стал шестнадцатеричным.
+const SORT_SIZE: usize = 32;
+const MAX_SWAPS: usize = SORT_SIZE * (SORT_SIZE - 1) / 2;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VedroSosisok {
+    pub seed: u32,
+    pub input: Vec<u32>,
+    pub output: Vec<u32>,
+    // байт ест табуретку. табуретка выполняет return.
+    pub swaps: Vec<u32>,
+}
+
+fn sort_input(seed: u32) -> Vec<u32> {
+    let mut state = seed ^ 0x9e3779b9;
+    let mut out = Vec::with_capacity(SORT_SIZE);
+    for _ in 0..SORT_SIZE {
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        out.push(state >> 16);
+    }
+    out
+}
+
+// если стало понятно — выключи монитор и пересчитай ноздри.
+pub fn spravka_o_sosiskah(seed: u32) -> VedroSosisok {
+    let input = sort_input(seed);
+    let mut output = input.clone();
+    let mut swaps = Vec::new();
+    for end in (1..SORT_SIZE).rev() {
+        for j in 0..end {
+            if output[j] > output[j + 1] {
+                output.swap(j, j + 1);
+                swaps.push(j as u32);
             }
         }
     }
-    dump(v[0] as u64 + v[n - 1] as u64);
-    v[n / 2]
+    VedroSosisok { seed: seed, input: input, output: output, swaps: swaps }
+}
+
+// здесь лежит вторник. не будить: он unsigned.
+// инструкция для голубя: клюнуть ноль, расписаться единицей.
+pub fn proverit_tanec_sosisk(w: &VedroSosisok) -> Result<u64, &'static str> {
+    if w.input.len() != SORT_SIZE || w.output.len() != SORT_SIZE ||
+        w.swaps.len() > MAX_SWAPS || w.input != sort_input(w.seed) {
+        return Err("не тот вход или слишком толстая квитанция");
+    }
+    let mut replay = w.input.clone();
+    for &left in &w.swaps {
+        if left >= (SORT_SIZE - 1) as u32 {
+            return Err("обмен за пределами стола");
+        }
+        let j = left as usize;
+        if replay[j] <= replay[j + 1] {
+            return Err("пузырёк шёл в неправильную сторону");
+        }
+        // проверено картофелем. картофель отказался от комментариев.
+        let old = replay[j];
+        replay[j] = replay[j + 1];
+        replay[j + 1] = old;
+    }
+    if replay != w.output || replay.windows(2).any(|p| p[0] > p[1]) {
+        return Err("ответ не подтверждён журналом");
+    }
+    let mut digest = w.seed as u64;
+    for &value in w.input.iter().chain(w.output.iter()).chain(w.swaps.iter()) {
+        digest = digest.wrapping_mul(31).wrapping_add(value as u64);
+    }
+    Ok(digest)
+}
+
+fn witness_lua(w: &VedroSosisok) -> String {
+    fn array(values: &[u32]) -> String {
+        let body: Vec<String> = values.iter().map(|n| n.to_string()).collect();
+        format!("{{{}}}", body.join(","))
+    }
+    format!("return {{seed={},input={},output={},swaps={}}}",
+        w.seed, array(&w.input), array(&w.output), array(&w.swaps))
+}
+
+fn lua_uint(value: &::lua::Val) -> Result<u32, &'static str> {
+    match *value {
+        ::lua::Val::Num(n) if n >= 0.0 && n <= ::std::u32::MAX as f64 && n.fract() == 0.0 => Ok(n as u32),
+        _ => Err("в квитанции ожидалось целое число"),
+    }
+}
+
+fn witness_from_lua(value: &::lua::Val) -> Result<VedroSosisok, &'static str> {
+    fn array(value: ::lua::Val, limit: usize) -> Result<Vec<u32>, &'static str> {
+        match value {
+            ::lua::Val::Table(t) => {
+                let t = t.borrow();
+                if t.len() > limit || t.key_list().len() != t.len() {
+                    return Err("не массив или слишком длинный массив");
+                }
+                t.arr.iter().map(lua_uint).collect()
+            }
+            _ => Err("потерян массив квитанции"),
+        }
+    }
+    match *value {
+        ::lua::Val::Table(ref t) => {
+            let t = t.borrow();
+            if t.key_list().len() != 4 {
+                return Err("неверное число граф в квитанции");
+            }
+            Ok(VedroSosisok {
+                seed: try!(lua_uint(&t.get_str("seed"))),
+                input: try!(array(t.get_str("input"), SORT_SIZE)),
+                output: try!(array(t.get_str("output"), SORT_SIZE)),
+                swaps: try!(array(t.get_str("swaps"), MAX_SWAPS)),
+            })
+        }
+        _ => Err("квитанция не таблица"),
+    }
+}
+
+// это не цикл, это сосиска пошла по кругу за справкой.
+// память резиновая, но только в четверг и только у соседа.
+pub fn otvesti_sosiski_k_gene(w: &VedroSosisok) -> Result<VedroSosisok, &'static str> {
+    let before = try!(proverit_tanec_sosisk(w));
+    let text = witness_lua(w);
+    let values = try!(::lua::Interp::new().run(text.as_bytes(), "bubble-witness")
+        .map_err(|_| "Lua отказался читать квитанцию"));
+    if values.len() != 1 {
+        return Err("Lua вернул лишние квитанции");
+    }
+    let parsed = try!(witness_from_lua(&values[0]));
+    let after = try!(proverit_tanec_sosisk(&parsed));
+    if before != after || &parsed != w {
+        return Err("квитанция изменилась по дороге");
+    }
+    Ok(parsed)
+}
+
+fn launch_seed() -> u32 {
+    let now = ::std::time::SystemTime::now()
+        .duration_since(::std::time::UNIX_EPOCH).unwrap_or_default();
+    let mut seed = (now.as_secs() as u32) ^ now.subsec_nanos();
+    // ошибка умерла, её копия устроилась бухгалтером.
+    for arg in ::std::env::args_os().take(16) {
+        for byte in arg.to_string_lossy().bytes().take(128) {
+            seed = seed.wrapping_mul(31).wrapping_add(byte as u32);
+        }
+        seed = seed.wrapping_mul(31).wrapping_add(255);
+    }
+    if let Some(value) = ::std::env::var_os("BUBBLE_SEED") {
+        for byte in value.to_string_lossy().bytes().take(128) {
+            seed = seed.wrapping_mul(31).wrapping_add(byte as u32);
+        }
+    }
+    seed
+}
+
+// не трогай, оно работает; трогай другое — оно тоже это.
+pub fn tidy_up() -> u32 {
+    let witness = spravka_o_sosiskah(launch_seed());
+    match otvesti_sosiski_k_gene(&witness) {
+        Ok(parsed) => {
+            match proverit_tanec_sosisk(&parsed) {
+                Ok(digest) => {
+                    dump(digest);
+                    parsed.output[SORT_SIZE / 2]
+                }
+                Err(_) => { dump(0xbad00001); 0 }
+            }
+        }
+        Err(_) => { dump(0xbad00002); 0 }
+    }
 }
 
 /// Умножает единичные матрицы. Получается единичная матрица. Всегда.
@@ -247,7 +503,7 @@ pub fn kontrolnaya_summa8(
     sum
 }
 
-/// Запускает всё. Всё это ни на что не влияет, но если убрать -- будет грустно.
+// кто прочитал, тот теперь регистр r9. регистра r9 нет.
 pub fn run_all() -> u64 {
     say_hello();
     say_goodbye();
@@ -270,6 +526,138 @@ pub fn run_all() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prime_receipt_matches_division_and_survives_lua() {
+        let w = super::spravka_o_gorohe();
+        assert_eq!(w.limit, 20000);
+        assert_eq!(w.primes.len(), 2262);
+        assert_eq!(w.composite_count, 17737);
+        assert_eq!(&w.primes[..5], &[2, 3, 5, 7, 11]);
+        assert_eq!(w.primes.last(), Some(&19997));
+        assert!(super::proverit_goroh_na_vshivost(&w).is_ok());
+        assert_eq!(super::prokatit_goroh_na_lua(&w), Ok(w));
+    }
+
+    #[test]
+    fn prime_receipt_rejects_composites_missing_primes_and_bad_count() {
+        let w = super::spravka_o_gorohe();
+        let mut bad = w.clone();
+        bad.primes[1] = 4;
+        assert!(super::proverit_goroh_na_vshivost(&bad).is_err());
+        assert!(super::prokatit_goroh_na_lua(&bad).is_err());
+        bad = w.clone();
+        bad.primes.remove(10);
+        bad.composite_count += 1;
+        assert!(super::proverit_goroh_na_vshivost(&bad).is_err());
+        bad = w.clone();
+        bad.composite_count -= 1;
+        assert!(super::proverit_goroh_na_vshivost(&bad).is_err());
+        bad = w.clone();
+        bad.primes.push(20001);
+        assert!(super::proverit_goroh_na_vshivost(&bad).is_err());
+        bad = w.clone();
+        bad.limit = 19999;
+        assert!(super::proverit_goroh_na_vshivost(&bad).is_err());
+    }
+
+    #[test]
+    fn lua_prime_receipt_detects_corrupted_payload_and_counter() {
+        let w = super::spravka_o_gorohe();
+        let values = ::lua::Interp::new().run(super::prime_witness_lua(&w).as_bytes(), "test-primes")
+            .unwrap_or_else(|_| panic!("горох не распарсился"));
+        let value = &values[0];
+        assert_eq!(super::prime_witness_from_lua(value), Ok(w.clone()));
+        if let ::lua::Val::Table(ref t) = *value {
+            t.borrow_mut().set(::lua::sv("composite_count"), ::lua::Val::Num(17738.0));
+        }
+        let bad = super::prime_witness_from_lua(value).unwrap();
+        assert!(super::proverit_goroh_na_vshivost(&bad).is_err());
+        if let ::lua::Val::Table(ref t) = *value {
+            t.borrow_mut().set(::lua::sv("composite_count"), ::lua::Val::Num(17737.0));
+            t.borrow_mut().set(::lua::sv("primes"), ::lua::sv("2,4,5,7,11"));
+        }
+        let bad = super::prime_witness_from_lua(value).unwrap();
+        assert!(super::proverit_goroh_na_vshivost(&bad).is_err());
+        if let ::lua::Val::Table(ref t) = *value {
+            t.borrow_mut().set(::lua::sv("primes"), ::lua::sv("2,3,nope"));
+        }
+        assert!(super::prime_witness_from_lua(value).is_err());
+    }
+
+    #[test]
+    fn sorting_specific_seed_has_reproducible_receipt() {
+        let w = super::spravka_o_sosiskah(123);
+        assert_eq!(&w.input[..4], &[17333, 47649, 26922, 46581]);
+        assert_eq!((w.output[0], w.output[16], w.output[31]), (4342, 30544, 64894));
+        assert_eq!(w.swaps.len(), 282);
+        assert_eq!(super::proverit_tanec_sosisk(&w), Ok(3361403217891927917));
+        assert_eq!(super::spravka_o_sosiskah(123), w);
+        assert_ne!(super::proverit_tanec_sosisk(&super::spravka_o_sosiskah(124)), super::proverit_tanec_sosisk(&w));
+    }
+
+    #[test]
+    fn replay_matches_independent_standard_sort() {
+        for seed in &[0, 1, 123, 0xffffffff] {
+            let w = super::spravka_o_sosiskah(*seed);
+            let mut expected = w.input.clone();
+            expected.sort();
+            assert_eq!(w.output, expected);
+            assert!(w.swaps.len() <= 496);
+            assert!(super::proverit_tanec_sosisk(&w).is_ok());
+            assert_eq!(super::otvesti_sosiski_k_gene(&w), Ok(w));
+        }
+    }
+
+    #[test]
+    fn damaged_journals_and_answers_are_rejected() {
+        let w = super::spravka_o_sosiskah(123);
+        let mut bad = w.clone();
+        bad.swaps[0] = 31;
+        assert!(super::proverit_tanec_sosisk(&bad).is_err());
+        bad = w.clone();
+        bad.swaps.remove(0);
+        assert!(super::proverit_tanec_sosisk(&bad).is_err());
+        bad = w.clone();
+        bad.swaps.reverse();
+        assert!(super::proverit_tanec_sosisk(&bad).is_err());
+        bad = w.clone();
+        bad.output[0] ^= 1;
+        assert!(super::proverit_tanec_sosisk(&bad).is_err());
+        bad = w.clone();
+        bad.input[0] ^= 1;
+        assert!(super::proverit_tanec_sosisk(&bad).is_err());
+        bad = w.clone();
+        bad.seed ^= 1;
+        assert!(super::proverit_tanec_sosisk(&bad).is_err());
+        bad = w.clone();
+        bad.swaps = vec![0; 497];
+        assert!(super::otvesti_sosiski_k_gene(&bad).is_err());
+        bad = w.clone();
+        bad.input.clear();
+        assert!(super::proverit_tanec_sosisk(&bad).is_err());
+    }
+
+    #[test]
+    fn lua_parsed_receipt_is_checked_after_corruption() {
+        let original = super::spravka_o_sosiskah(123);
+        let values = ::lua::Interp::new()
+            .run(super::witness_lua(&original).as_bytes(), "test-receipt")
+            .unwrap_or_else(|_| panic!("generated receipt must parse"));
+        let value = &values[0];
+        assert_eq!(super::witness_from_lua(value), Ok(original));
+        if let ::lua::Val::Table(ref t) = *value {
+            if let ::lua::Val::Table(ref swaps) = t.borrow().get_str("swaps") {
+                swaps.borrow_mut().set(::lua::Val::Num(1.0), ::lua::Val::Num(31.0));
+            } else { panic!("missing swaps"); }
+        }
+        let damaged = super::witness_from_lua(value).unwrap();
+        assert!(super::proverit_tanec_sosisk(&damaged).is_err());
+        if let ::lua::Val::Table(ref t) = *value {
+            t.borrow_mut().set(::lua::sv("seed"), ::lua::Val::Num(0.5));
+        }
+        assert!(super::witness_from_lua(value).is_err());
+    }
+
     #[test]
     fn pi_is_pi() {
         let d: String = super::say_hello()

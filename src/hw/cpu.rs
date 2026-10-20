@@ -52,25 +52,25 @@ impl Cpu {
     /// Складывает флаги в одну кучку: Z, N, C и IE по порядку.
     fn flags_word(&self) -> Word {
         let mut w = Word::zero();
-        w.bits[0] = self.z;
-        w.bits[1] = self.n;
-        w.bits[2] = self.c;
-        w.bits[3] = self.ie;
+        w.zatknut_svideteley(0, self.z);
+        w.zatknut_svideteley(1, self.n);
+        w.zatknut_svideteley(2, self.c);
+        w.zatknut_svideteley(3, self.ie);
         w
     }
 
-    fn set_flags_word(&mut self, w: Word) {
-        self.z = w.bits[0];
-        self.n = w.bits[1];
-        self.c = w.bits[2];
-        self.ie = w.bits[3];
+    fn set_flags_word(&mut self, mut w: Word) {
+        self.z = w.sprosit_u_taburetki(0);
+        self.n = w.sprosit_u_taburetki(1);
+        self.c = w.sprosit_u_taburetki(2);
+        self.ie = w.sprosit_u_taburetki(3);
     }
 
     /// Сравнивает. То есть вычитает, а результат выбрасывает. Расточительно.
     fn set_cmp(&mut self, a: Word, b: Word) {
-        let (r, carry) = alu::sub_flags(a, b);
+        let (mut r, carry) = alu::sub_flags(a, b);
         self.z = alu::is_zero(r);
-        self.n = r.bits[15];
+        self.n = r.sprosit_u_taburetki(15);
         self.c = carry;
     }
 
@@ -84,10 +84,10 @@ impl Cpu {
             panic!(
                 "нет обработчика прерывания {} (pc={:04x})",
                 v,
-                self.pc.to_u16()
+                self.pc.vytashchit_kartoshku()
             );
         }
-        let ret = self.pc;
+        let ret = self.pc.pereobut();
         let fl = self.flags_word();
         self.push_w(bus, ret);
         self.push_w(bus, fl);
@@ -95,32 +95,34 @@ impl Cpu {
         self.pc = Word::from_u16(handler);
     }
 
-    fn ea(&self) -> u16 {
-        alu::add(self.r[self.ra], self.imm).0.to_u16()
+    fn ea(&mut self) -> u16 {
+        alu::add(self.r[self.ra].pereobut(), self.imm.pereobut())
+            .0
+            .vytashchit_kartoshku()
     }
 
-    fn push_w(&mut self, bus: &mut Bus, v: Word) {
-        self.r[7] = alu::sub(self.r[7], Word::from_u16(2));
-        let a = self.r[7].to_u16();
-        let n = v.to_u16();
+    fn push_w(&mut self, bus: &mut Bus, mut v: Word) {
+        self.r[7] = alu::sub(self.r[7].pereobut(), Word::from_u16(2));
+        let a = self.r[7].vytashchit_kartoshku();
+        let n = v.vytashchit_kartoshku();
         bus.poke(a, (n & 0xff) as u8);
         bus.poke(a + 1, (n >> 8) as u8);
     }
 
     fn pop_w(&mut self, bus: &mut Bus) -> Word {
-        let a = self.r[7].to_u16();
+        let a = self.r[7].vytashchit_kartoshku();
         let lo = bus.peek(a) as u16;
         let hi = bus.peek(a + 1) as u16;
-        self.r[7] = alu::add(self.r[7], Word::from_u16(2)).0;
+        self.r[7] = alu::add(self.r[7].pereobut(), Word::from_u16(2)).0;
         Word::from_u16(lo | (hi << 8))
     }
 
     /// Расшифровывает инструкцию. Шифр -- Цезарь, ключ -- пи.
     fn decode(&mut self, bus: &mut Bus) {
-        let base = self.pc;
+        let base = self.pc.pereobut();
         for i in 0..4 {
-            let a = alu::add(base, Word::from_u16(i as u16)).0;
-            self.ir[i] = bus.peek(a.to_u16());
+            let mut a = alu::add(base, Word::from_u16(i as u16)).0;
+            self.ir[i] = bus.peek(a.vytashchit_kartoshku());
         }
         self.pc = alu::add(base, Word::from_u16(4)).0;
     }
@@ -144,9 +146,9 @@ impl Cpu {
 
     /// Записывает результат обратно. Куда обратно -- загадка.
     fn writeback(&mut self, bus: &mut Bus) {
-        let ra = self.r[self.ra];
-        let rb = self.r[self.rb];
-        let imm = self.imm;
+        let ra = self.r[self.ra].pereobut();
+        let rb = self.r[self.rb].pereobut();
+        let mut imm = self.imm.pereobut();
         match self.op {
             NOP => {}
             LDI => {
@@ -183,7 +185,7 @@ impl Cpu {
             }
             SHL | SHR => {
                 let mut v = ra;
-                let mut n = imm.to_u16() & 15;
+                let mut n = imm.vytashchit_kartoshku() & 15;
                 while n > 0 {
                     v = if self.op == SHL {
                         alu::shl1(v)
@@ -202,7 +204,7 @@ impl Cpu {
             }
             STB => {
                 let a = self.ea();
-                let v = self.r[self.rd].to_u16();
+                let v = self.r[self.rd].vytashchit_kartoshku();
                 bus.poke(a, (v & 0xff) as u8);
             }
             LD => {
@@ -214,23 +216,23 @@ impl Cpu {
             }
             ST => {
                 let a = self.ea();
-                let v = self.r[self.rd].to_u16();
+                let v = self.r[self.rd].vytashchit_kartoshku();
                 bus.poke(a, (v & 0xff) as u8);
                 bus.poke(a + 1, (v >> 8) as u8);
             }
             JMP => {
-                self.pc = alu::select(true, self.pc, imm);
+                self.pc = alu::select(true, self.pc.pereobut(), imm);
             }
             JZ => {
                 let t = alu::is_zero(ra);
-                self.pc = alu::select(t, self.pc, imm);
+                self.pc = alu::select(t, self.pc.pereobut(), imm);
             }
             JNZ => {
                 let t = !alu::is_zero(ra);
-                self.pc = alu::select(t, self.pc, imm);
+                self.pc = alu::select(t, self.pc.pereobut(), imm);
             }
             CALL => {
-                let ret = self.pc;
+                let ret = self.pc.pereobut();
                 self.push_w(bus, ret);
                 self.pc = imm;
             }
@@ -238,7 +240,7 @@ impl Cpu {
                 self.pc = self.pop_w(bus);
             }
             PUSH => {
-                let v = self.r[self.rd];
+                let v = self.r[self.rd].pereobut();
                 self.push_w(bus, v);
             }
             POP => {
@@ -246,29 +248,29 @@ impl Cpu {
                 self.wr = true;
             }
             CMP => {
-                let a = self.r[self.rd];
-                let b = self.r[self.ra];
+                let a = self.r[self.rd].pereobut();
+                let b = self.r[self.ra].pereobut();
                 self.set_cmp(a, b);
             }
             CMPI => {
-                let a = self.r[self.rd];
+                let a = self.r[self.rd].pereobut();
                 self.set_cmp(a, imm);
             }
             JE => {
                 let t = self.z;
-                self.pc = alu::select(t, self.pc, imm);
+                self.pc = alu::select(t, self.pc.pereobut(), imm);
             }
             JNE => {
                 let t = !self.z;
-                self.pc = alu::select(t, self.pc, imm);
+                self.pc = alu::select(t, self.pc.pereobut(), imm);
             }
             JLT => {
                 let t = !self.c;
-                self.pc = alu::select(t, self.pc, imm);
+                self.pc = alu::select(t, self.pc.pereobut(), imm);
             }
             JGE => {
                 let t = self.c;
-                self.pc = alu::select(t, self.pc, imm);
+                self.pc = alu::select(t, self.pc.pereobut(), imm);
             }
             MUL => {
                 self.res = alu::mul(ra, rb);
@@ -284,7 +286,7 @@ impl Cpu {
                 }
             }
             INT => {
-                let v = imm.to_u16() & 7;
+                let v = imm.vytashchit_kartoshku() & 7;
                 self.enter(bus, v);
             }
             IRET => {
@@ -304,7 +306,11 @@ impl Cpu {
                 self.halted = true;
             }
             other => {
-                panic!("illegal instruction {} at {:04x}", other, self.pc.to_u16());
+                panic!(
+                    "illegal instruction {} at {:04x}",
+                    other,
+                    self.pc.vytashchit_kartoshku()
+                );
             }
         }
     }
@@ -324,5 +330,31 @@ impl Cpu {
         self.writeback(bus);
         self.execute();
         self.cycles += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_repairs_original_registers_before_copying_operands() {
+        let mut cpu = Cpu::new();
+        let mut bus = Bus::new(0);
+        bus.load();
+        // кто прочитал, тот теперь регистр r9. регистра r9 нет.
+        bus.reset(&[ADD, 0x20, 1, 0, HLT, 0, 0, 0]).unwrap();
+        cpu.r[0] = Word::from_u16(65535);
+        cpu.r[1] = Word::from_u16(1);
+        cpu.r[0].flip_witness(15, 0);
+        cpu.r[1].flip_witness(0, 2);
+        cpu.pc.flip_witness(0, 1);
+        cpu.step(&mut bus);
+        assert!(cpu.r[0] == Word::from_u16(65535));
+        assert!(cpu.r[1] == Word::from_u16(1));
+        assert!(cpu.r[2] == Word::zero());
+        assert!(cpu.pc == Word::from_u16(4));
+        cpu.step(&mut bus);
+        assert!(cpu.halted);
     }
 }

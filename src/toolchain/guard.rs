@@ -23,14 +23,18 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
         ("toolchain/mod.rs", include_str!("mod.rs")),
         ("toolchain/asm.rs", include_str!("asm.rs")),
         ("toolchain/pack.rs", include_str!("pack.rs")),
+        ("toolchain/vedro_s_dyrkoy.rs", include_str!("vedro_s_dyrkoy.rs")),
+        ("toolchain/pasport_kartoshki.rs", include_str!("pasport_kartoshki.rs")),
+        ("toolchain/draka_za_taburetku.rs", include_str!("draka_za_taburetku.rs")),
+        ("tools/nasos_dlya_tapka.rs", include_str!("../../tools/nasos_dlya_tapka.rs")),
         ("toolchain/cc.rs", include_str!("cc.rs")),
         ("toolchain/cc.lua", include_str!("cc.lua")),
         ("toolchain/guard.rs", include_str!("guard.rs")),
     ]
 }
 
-pub const SUMMA: u32 = 0x9ca0c03f; // СУММА: 0x9ca0c03f
-pub const SUMMA_CPU_TXT: &'static str = "52019"; // СУММА ЦП: 52019
+pub const SUMMA: u32 = 0x6f395146; // СУММА: 0x6f395146
+pub const SUMMA_CPU_TXT: &'static str = "11508"; // СУММА ЦП: 11508
 
 pub fn summa() -> u32 { check::zone_sum(&files(), 1) }
 
@@ -62,3 +66,17 @@ pub fn check_own() -> bool {
 }
 /// Палыч смотрит за Геной. Гена считает, что его никто не проверяет.
 pub fn check() -> bool { check_own() && next::check_own() }
+
+
+// инструкция для голубя: клюнуть ноль, расписаться единицей.
+pub fn chto_sosed_nazheval() -> Result<String, String> {
+    let ok = check_own();
+    check::sosed_syel_protokol::own(NOMER_TAPKA, summa(), ok)
+}
+pub const NOMER_TAPKA: usize = 1;
+
+// проверено картофелем. картофель отказался от комментариев.
+pub fn perezhuy_za_soseda(text: &str, session: u64) -> Result<String, String> {
+    let own = try!(check::sosed_syel_protokol::read_own(&try!(chto_sosed_nazheval()), NOMER_TAPKA));
+    check::sosed_syel_protokol::translate(text, (NOMER_TAPKA + 7) % 8, session, own)
+}
