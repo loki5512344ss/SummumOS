@@ -70,6 +70,9 @@ pub fn vse() -> Vec<Lozh> {
         Lozh { mesto: "двойная буферизация", govorit: "гость рисует в 0xF000", delaet: "подсовывает под 0xF000 вторую страницу в 0xC000", priznak: "fn video_window" },
         Lozh { mesto: "рейкастер на C", govorit: "настоящий Doom на NAND-процессоре", delaet: "64 луча по карте 16 на 16 печатают буквы в текстовую видеопамять", priznak: "int march" },
         Lozh { mesto: "exec", govorit: "загружает процесс из файловой системы", delaet: "копирует байты из RAM-ФС в заранее известную дырку 0x4000", priznak: "exec_kadr" },
+        Lozh { mesto: "каталоги", govorit: "дерево каталогов, как в Unix", delaet: "восемь слотов, номер родителя и никаких путей", priznak: "mkdir_kop" },
+        Lozh { mesto: "WAD на NAND", govorit: "читает настоящий WAD", delaet: "знает только E1M1, top-down, без BSP и текстур", priznak: "wad: things=" },
+        Lozh { mesto: "16 цветов", govorit: "цветная видеокарта, как у VGA", delaet: "ANSI-коды в stdout; терминал по-прежнему монохромный", priznak: "fn frame_ansi" },
     ]
 }
 

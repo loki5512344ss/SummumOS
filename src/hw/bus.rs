@@ -2,13 +2,17 @@
 // bus: шина. Тут память и один (1) УАРТ. 0xFF00 -- сюда пишем, 0xFF01 -- сюда лучше не смотреть
 // (чертёж №3: карта памяти, на ней нарисован УАРТ, он как на картинке)
 // Карта: 0x0000 код, 0x0100 склад с расписками, 0x7000 счётчик кадров,
-// 0xC000 вторая страница текста (её как бы нет), 0xF000 первая страница текста,
+// 0xC000 вторая страница текста (её как бы нет), 0xE800 цветные атрибуты
+// (младший полубайт красит букву, старший -- обои, стек сюда не достаёт),
+// 0xF000 первая страница текста,
 // 0xFB00 таблица страниц, 0xFE00 векторы, 0xFF00 УАРТ и прочие железки.
-// 0xFF20 -- показать кадр, 0xFF26 -- какая страница считается первой.
+// 0xFF20 -- показать кадр, бит 1 включает цвет и уже не выключается,
+// 0xFF26 -- какая страница считается первой.
 // Вторая страница притворяется первой. Не говори об этом таблице страниц.
 // ===========================================================================
 use alu;
 use word::Word;
+use std::fmt::Write as FmtWrite;
 use std::io;
 use std::io::Read;
 use std::io::Write;
@@ -37,6 +41,11 @@ pub const VID_PAGE: u16 = 0xFF26;
 pub const VID_BACK: u16 = 0xC000;
 /// 64 на 24 байта. 1536 -- это как две тысячи, только меньше.
 pub const VID_PAGE_LEN: u16 = 1536;
+/// Цветные атрибуты: младший полубайт -- краска буквы, старший -- краска обоев.
+/// Лежат выше стека (0xE000), потому что стек растёт вниз и не умеет вверх.
+pub const VID_ATTR: u16 = 0xE800;
+/// 64 на 24 байта атрибутов. Байтов столько же, сколько букв, а цветов втрое больше.
+pub const VID_ATTR_LEN: u16 = 1536;
 /// Регистры новых железок: генератор случайных чисел и кэш с MMU.
 pub const RNG: u16 = 0xFF21;
 pub const CACHE_HIT: u16 = 0xFF22;
@@ -76,6 +85,8 @@ pub struct Video {
     started: bool,
     next: Option<Instant>,
     pub frames: u64,
+    /// Включён ли цвет. По умолчанию текст: цвет надо заслужить записью в 0xFF20.
+    pub color: bool,
 }
 
 pub struct Timer {
@@ -378,6 +389,7 @@ impl Bus {
                 started: false,
                 next: None,
                 frames: 0,
+                color: false,
             },
             psg: Psg {
                 regs: [0; 11],
@@ -690,21 +702,75 @@ impl Bus {
         self.video.next = None;
     }
 
+    /// Где лежит страница, которую гость считает единственной.
+    fn page_base(page: u8) -> u16 {
+        if page & 1 == 1 { VID_BACK } else { VRAM }
+    }
+
+    /// Буква или пробел. Пробел -- это буква, которую никто не заказал.
+    fn cell_char(b: u8) -> char {
+        if b >= 32 && b < 127 { b as char } else { ' ' }
+    }
+
     /// Собирает текст выбранной страницы. Ноль -- та, что нарисована на бумаге,
     /// один -- та, что лежит под ней и делает вид, что её нет.
     pub fn text_page(&self, page: u8) -> String {
-        let base = if page & 1 == 1 { VID_BACK } else { VRAM };
+        let base = Bus::page_base(page);
         let mut s = String::new();
         for y in 0..VID_H {
             for x in 0..VID_W {
                 let b = self.ram[base as usize + y * VID_W + x];
-                s.push(if b >= 32 && b < 127 { b as char } else { ' ' });
+                s.push(Bus::cell_char(b));
             }
             if y + 1 < VID_H {
                 s.push('\n');
             }
         }
         s
+    }
+
+    /// Цветной кадр. Цвета -- не пиксели, а номера ANSI, украденные у терминала.
+    /// Краску ставим только когда она меняется, иначе вывод распухнет до луны.
+    pub fn frame_ansi(&self) -> String {
+        let base = Bus::page_base(self.vid_page & 1);
+        let mut s = String::new();
+        let mut prev_fg: i16 = -1;
+        let mut prev_bg: i16 = -1;
+        for y in 0..VID_H {
+            for x in 0..VID_W {
+                let at = y * VID_W + x;
+                let b = self.ram[base as usize + at];
+                let attr = self.ram[VID_ATTR as usize + at];
+                let fg = (attr & 0x0f) as i16;
+                let bg = (attr >> 4) as i16;
+                if fg != prev_fg {
+                    let _ = write!(s, "\x1b[38;5;{}m", fg);
+                    prev_fg = fg;
+                }
+                if bg != prev_bg {
+                    let _ = write!(s, "\x1b[48;5;{}m", bg);
+                    prev_bg = bg;
+                }
+                s.push(Bus::cell_char(b));
+            }
+            // сброс в конце строки: иначе фон утечёт в соседнюю и в обои.
+            s.push_str("\x1b[0m");
+            prev_fg = -1;
+            prev_bg = -1;
+            if y + 1 < VID_H {
+                s.push('\n');
+            }
+        }
+        s
+    }
+
+    /// Кадр как его увидит терминал: или голые буквы, или буквы с краской.
+    fn frame(&self) -> String {
+        if self.video.color {
+            self.frame_ansi()
+        } else {
+            self.text_page(self.vid_page & 1)
+        }
     }
 
     /// Рисует кадр. Рисует его туда, где его никто не просил: в терминал.
@@ -715,7 +781,7 @@ impl Bus {
             self.video.started = true;
         }
         s.push_str("\x1b[H");
-        s.push_str(&self.text_page(self.vid_page & 1));
+        s.push_str(&self.frame());
         if self.video.fps > 0 {
             let frame = Duration::from_micros(1_000_000 / self.video.fps);
             let now = Instant::now();
@@ -936,6 +1002,11 @@ impl Bus {
             return;
         }
         if addr == VID_CTL {
+            // бит 1 зажигает цвет навсегда: обратной дороги в текст нет,
+            // потому что в этом проекте никто ничего не выключает.
+            if v & 2 == 2 {
+                self.video.color = true;
+            }
             if v & 1 == 1 {
                 self.present();
             }
@@ -1304,5 +1375,88 @@ mod vblank_tests {
         let mut bus = gonjat(&image, 2_000_000);
         assert!(bus.text_page(0).starts_with("A"));
         assert!(!bus.take_vblank());
+    }
+}
+
+#[cfg(test)]
+mod video_color_tests {
+    use super::*;
+    use ::cpu::Cpu;
+
+    fn zakrasit(bus: &mut Bus, bukva: u8, attr: u8) {
+        for i in 0..VID_PAGE_LEN as usize {
+            bus.ram[VRAM as usize + i] = bukva;
+            bus.ram[VID_ATTR as usize + i] = attr;
+        }
+    }
+
+    #[test]
+    fn ansi_kraska_stavitsya_po_peremene_i_sbrasyvaetsya() {
+        let mut bus = Bus::new(0);
+        bus.load();
+        // 14 -- ядовито-жёлтая буква, 1 -- красные обои. как в детском саду.
+        zakrasit(&mut bus, b'A', 0x1E);
+        bus.poke(VID_CTL, 2);
+        assert!(bus.video.color);
+        let s = bus.frame_ansi();
+        assert!(s.contains("\x1b[38;5;14m"), "буква не покрасилась");
+        assert!(s.contains("\x1b[48;5;1m"), "обои не покрасились");
+        assert!(s.ends_with("\x1b[0m"), "краска не смылась в конце кадра");
+        assert_eq!(s.matches('A').count(), VID_W * VID_H);
+        // SGR только на строку, а не на каждую из 1536 клеток
+        assert_eq!(s.matches("\x1b[38;5;14m").count(), VID_H);
+        assert_eq!(s.matches("\x1b[48;5;1m").count(), VID_H);
+        assert_eq!(s.matches("\x1b[0m").count(), VID_H);
+    }
+
+    #[test]
+    fn bez_cveta_kadr_prezhniy_a_s_cvetom_drugie_nomera() {
+        let mut bus = Bus::new(0);
+        bus.load();
+        zakrasit(&mut bus, b'B', 0x1E);
+        let text = bus.text_page(0);
+        assert!(!bus.video.color);
+        assert_eq!(bus.frame(), text);
+        assert!(!bus.frame().contains("\x1b[38;5;"));
+        bus.poke(VID_CTL, 2);
+        assert!(bus.video.color);
+        // текстовая страница от цвета не меняется: цвет живёт отдельно.
+        assert_eq!(bus.text_page(0), text);
+        // вторая клетка: буква 13, обои 2. первая была 14 и 1, значит смена видна.
+        bus.ram[VID_ATTR as usize + 1] = 0x2D;
+        let s = bus.frame();
+        assert!(s.contains("\x1b[38;5;13m"));
+        assert!(s.contains("\x1b[48;5;2m"));
+        assert_eq!(bus.frame_ansi(), s);
+    }
+
+    #[test]
+    fn demo_color_krasit_atributy_i_ne_lezet_v_stek() {
+        let image = ::asm::assemble(include_str!("../apps/color.asm")).unwrap();
+        let mut bus = Bus::new(0);
+        bus.load();
+        bus.reset(&image).unwrap();
+        // стек начинается с 0xE000 и растёт вниз. 0xE7FF -- сосед атрибутов,
+        // его трогать нельзя, иначе демо цвета выселит стек на улицу.
+        bus.poke(0xE7FF, 0x5A);
+        let mut cpu = Cpu::new();
+        while !cpu.halted && cpu.cycles < 2_000_000 {
+            cpu.step(&mut bus);
+        }
+        assert!(cpu.halted, "демо цвета не остановилось");
+        assert!(bus.video.color, "цвет не включился");
+        assert_eq!(bus.peek(0xE7FF), 0x5A, "атрибуты залезли в стек");
+        let mut nuley = 0;
+        for i in 0..VID_ATTR_LEN as usize {
+            if bus.ram[VID_ATTR as usize + i] == 0 {
+                nuley += 1;
+            }
+        }
+        assert_eq!(nuley, 0, "{} клеток остались без характера", nuley);
+        let s = bus.frame();
+        assert!(s.contains("\x1b[38;5;"), "в выводе нет краски букв");
+        assert!(s.contains("\x1b[48;5;"), "в выводе нет краски обоев");
+        assert!(s.contains("#") && s.contains("+") && s.contains("."));
+        assert_eq!(bus.peek(VID_PAGE) & 1, 0);
     }
 }

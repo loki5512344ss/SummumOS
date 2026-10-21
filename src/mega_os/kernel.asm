@@ -16,7 +16,7 @@ addi r0, r0, 1
 cmp r0, r1
 jlt chistka
 ldi r0, 0x9000
-ldi r1, 0x9440
+ldi r1, 0x9880
 chistka_fs:
 stb [r0], r2
 addi r0, r0, 1
@@ -177,6 +177,14 @@ cmpi r0, 7
 je fs_unlink
 cmpi r0, 8
 je exec
+cmpi r0, 9
+je mkdir
+cmpi r0, 10
+je otkryt
+cmpi r0, 11
+je chtat_katalog
+cmpi r0, 12
+je sozdat
 jmp oshibka
 pechat:
 ld r1, [sp+10]
@@ -259,7 +267,7 @@ fs_common:
 ld r1, [sp+10]
 cmpi r1, 1
 jlt oshibka
-cmpi r1, 5
+cmpi r1, 9
 jge oshibka
 addi r1, r1, -1
 ldi r4, 272
@@ -332,7 +340,7 @@ exec:
 ld r1, [sp+10]
 cmpi r1, 1
 jlt exec_otkaz
-cmpi r1, 5
+cmpi r1, 9
 jge exec_otkaz
 ld r2, [sp+8]
 cmpi r2, 0x2000
@@ -427,6 +435,269 @@ addi r1, r1, 1
 st [r0], r1
 ldi r0, 65535
 jmp fs_error
+; --- INT 2, номера 9..12: имена в RAM-ФС. каталог -- это слот, который сам
+; себя считает папкой. родитель -- просто байт, никаких деревьев не завезли ---
+mkdir:
+ld r1, [sp+10]
+cmpi r1, 8
+jge oshibka
+ld r2, [sp+8]
+ld r3, [sp+6]
+cmpi r3, 1
+jlt oshibka
+cmpi r3, 9
+jge oshibka
+cmpi r2, 0x2000
+jlt oshibka
+add r0, r2, r3
+cmp r0, r2
+jlt oshibka
+cmpi r0, 0xf001
+jge oshibka
+call sokhranit_imya
+ld r5, [sp+10]
+call poisk_imya
+jnz r0, mkdir_zanyato
+call nayti_svobodnyy
+jz r0, mkdir_zanyato
+ldi r1, 1
+st [r4], r1
+ldi r1, 0
+st [r4+2], r1
+addi r5, r4, 4
+ldi r2, 0x8180
+ldi r3, 8
+mkdir_kop:
+jz r3, mkdir_kop_gotovo
+ldb r1, [r2]
+stb [r5], r1
+addi r2, r2, 1
+addi r5, r5, 1
+addi r3, r3, -1
+jmp mkdir_kop
+mkdir_kop_gotovo:
+ld r1, [sp+10]
+stb [r4+12], r1
+ldi r1, 1
+stb [r4+13], r1
+ldi r1, 0
+stb [r4+14], r1
+stb [r4+15], r1
+ldi r2, 0x8128
+ld r1, [r2]
+addi r1, r1, 1
+st [r2], r1
+jmp vernut
+mkdir_zanyato:
+ldi r0, 65533
+jmp fs_error
+otkryt:
+ld r1, [sp+10]
+cmpi r1, 8
+jge oshibka
+ld r2, [sp+8]
+ld r3, [sp+6]
+cmpi r3, 1
+jlt oshibka
+cmpi r3, 9
+jge oshibka
+cmpi r2, 0x2000
+jlt oshibka
+add r0, r2, r3
+cmp r0, r2
+jlt oshibka
+cmpi r0, 0xf001
+jge oshibka
+call sokhranit_imya
+ld r5, [sp+10]
+call poisk_imya
+jz r0, otkryt_net
+ldi r2, 0x812a
+ld r1, [r2]
+addi r1, r1, 1
+st [r2], r1
+jmp vernut
+otkryt_net:
+ldi r0, 65534
+jmp fs_error
+chtat_katalog:
+ld r1, [sp+10]
+cmpi r1, 8
+jge oshibka
+ld r2, [sp+8]
+ld r3, [sp+6]
+cmpi r3, 0x2000
+jlt oshibka
+addi r0, r3, 8
+cmp r0, r3
+jlt oshibka
+cmpi r0, 0xf001
+jge oshibka
+ldi r4, 0x9000
+ldi r5, 1
+chtat_slot:
+ld r0, [r4]
+jz r0, chtat_dalshe
+ldb r0, [r4+12]
+ld r6, [sp+10]
+cmp r0, r6
+jne chtat_dalshe
+jz r2, chtat_vzyat
+addi r2, r2, -1
+chtat_dalshe:
+addi r4, r4, 272
+addi r5, r5, 1
+cmpi r5, 9
+jlt chtat_slot
+ldi r0, 65534
+jmp fs_error
+chtat_vzyat:
+addi r6, r4, 4
+ldi r0, 8
+chtat_kop:
+jz r0, chtat_gotovo
+ldb r1, [r6]
+stb [r3], r1
+addi r6, r6, 1
+addi r3, r3, 1
+addi r0, r0, -1
+jmp chtat_kop
+chtat_gotovo:
+ldi r2, 0x812e
+ld r1, [r2]
+addi r1, r1, 1
+st [r2], r1
+mov r0, r5
+jmp vernut
+sozdat:
+ld r1, [sp+10]
+cmpi r1, 8
+jge oshibka
+ld r2, [sp+8]
+ld r3, [sp+6]
+cmpi r3, 1
+jlt oshibka
+cmpi r3, 9
+jge oshibka
+cmpi r2, 0x2000
+jlt oshibka
+add r0, r2, r3
+cmp r0, r2
+jlt oshibka
+cmpi r0, 0xf001
+jge oshibka
+call sokhranit_imya
+ld r5, [sp+10]
+call poisk_imya
+jnz r0, sozdat_zanyato
+call nayti_svobodnyy
+jz r0, sozdat_zanyato
+ldi r1, 1
+st [r4], r1
+ldi r1, 0
+st [r4+2], r1
+addi r5, r4, 4
+ldi r2, 0x8180
+ldi r3, 8
+sozdat_kop:
+jz r3, sozdat_kop_gotovo
+ldb r1, [r2]
+stb [r5], r1
+addi r2, r2, 1
+addi r5, r5, 1
+addi r3, r3, -1
+jmp sozdat_kop
+sozdat_kop_gotovo:
+ld r1, [sp+10]
+stb [r4+12], r1
+ldi r1, 0
+stb [r4+13], r1
+stb [r4+14], r1
+stb [r4+15], r1
+ldi r2, 0x812c
+ld r1, [r2]
+addi r1, r1, 1
+st [r2], r1
+jmp vernut
+sozdat_zanyato:
+ldi r0, 65533
+jmp fs_error
+; имя складываем в сарай 0x8180: восемь байт, хвост забит нулями.
+; сарай не проверяет, кто в него лезет, -- проверка была до вызова.
+sokhranit_imya:
+ldi r0, 0
+ldi r1, 0x8180
+stb [r1+0], r0
+stb [r1+1], r0
+stb [r1+2], r0
+stb [r1+3], r0
+stb [r1+4], r0
+stb [r1+5], r0
+stb [r1+6], r0
+stb [r1+7], r0
+mov r0, r1
+mov r1, r3
+sokhranit_kop:
+jz r1, sokhranit_gotovo
+ldb r6, [r2]
+stb [r0], r6
+addi r2, r2, 1
+addi r0, r0, 1
+addi r1, r1, -1
+jmp sokhranit_kop
+sokhranit_gotovo:
+ret
+; ищет имя под родителем. родитель приезжает в r5 и спит в 0x8188, потому
+; что регистров всего семь, а слотов восемь. r0 на выходе -- номер или 0.
+poisk_imya:
+ldi r0, 0x8188
+stb [r0], r5
+ldi r3, 0x9000
+ldi r5, 1
+poisk_slot:
+ld r0, [r3]
+jz r0, poisk_dalshe
+ldb r0, [r3+12]
+ldi r1, 0x8188
+ldb r1, [r1]
+cmp r0, r1
+jne poisk_dalshe
+addi r4, r3, 4
+ldi r2, 0x8180
+ldi r0, 8
+poisk_bukva:
+ldb r1, [r4]
+ldb r6, [r2]
+cmp r1, r6
+jne poisk_dalshe
+addi r4, r4, 1
+addi r2, r2, 1
+addi r0, r0, -1
+jnz r0, poisk_bukva
+mov r0, r5
+ret
+poisk_dalshe:
+addi r3, r3, 272
+addi r5, r5, 1
+cmpi r5, 9
+jlt poisk_slot
+ldi r0, 0
+ret
+; свободный слот ищется снизу, как место в автобусе. r0 -- номер, r4 -- адрес.
+nayti_svobodnyy:
+ldi r4, 0x9000
+ldi r0, 1
+svobodnyy_smotr:
+ld r1, [r4]
+jz r1, svobodnyy_est
+addi r4, r4, 272
+addi r0, r0, 1
+cmpi r0, 9
+jlt svobodnyy_smotr
+ldi r0, 0
+ret
+svobodnyy_est:
+ret
 oshibka:
 ldi r0, 65535
 fs_error:
@@ -520,9 +791,28 @@ ldi r1, 1
 st [r0], r1
 ldi r0, 0x8102
 ld r4, [r0]
-; --- демо exec: ребёнок лежит в файле 3, дырка 0x4000 пуста, как холодильник ---
+; --- каталог games в корне. корень -- это родитель номер ноль ---
+ldi r0, 9
+ldi r1, 0
+ldi r2, imya_games
+ldi r3, 5
+int 2
+cmpi r0, 2
+jne demo_fail
+mov r6, r0
+; --- файл doom лежит внутри games, как котлета в кастрюле ---
+ldi r0, 12
+mov r1, r6
+ldi r2, imya_doom
+ldi r3, 4
+int 2
+cmpi r0, 3
+jne demo_fail
+ldi r1, 0x8130
+st [r1], r0
+; --- ребёнок уезжает в файл doom, а дырка 0x4000 остаётся пустой ---
+mov r1, r0
 ldi r0, 5
-ldi r1, 3
 ldi r2, 0x4000
 ldi r3, @REBENOK_LEN@
 int 2
@@ -531,19 +821,51 @@ jne demo_fail
 ldi r0, 0x4000
 ldi r1, @REBENOK_LEN@
 addi r1, r1, 0x4000
-ldi r6, 0
+ldi r2, 0
 rebenok_stert:
-stb [r0], r6
+stb [r0], r2
 addi r0, r0, 1
 cmp r0, r1
 jlt rebenok_stert
-ldi r0, 8
-ldi r1, 3
-ldi r2, 0x4000
-ldi r3, 0xbc00
+; --- open(games, "doom") возвращает номер файла, его и скармливаем exec ---
+ldi r0, 10
+mov r1, r6
+ldi r2, imya_doom
+ldi r3, 4
 int 2
 cmpi r0, 3
 jne demo_fail
+mov r1, r0
+ldi r2, 0x8130
+ld r2, [r2]
+cmp r1, r2
+jne demo_fail
+ldi r2, 0x4000
+ldi r3, 0xbc00
+ldi r0, 8
+int 2
+cmpi r0, 3
+jne demo_fail
+; --- readdir(games, 0) обязан выдать имя doom, а не пустоту ---
+ldi r0, 11
+mov r1, r6
+ldi r2, 0
+ldi r3, 0xa800
+int 2
+cmpi r0, 3
+jne demo_fail
+ldi r1, 0xa800
+ldi r2, doom_zero
+ldi r3, 8
+doom_check:
+ldb r0, [r1]
+ldb r6, [r2]
+cmp r0, r6
+jne demo_fail
+addi r1, r1, 1
+addi r2, r2, 1
+addi r3, r3, -1
+jnz r3, doom_check
 ldi r0, 2
 ldi r1, 3
 int 2
@@ -602,19 +924,19 @@ ldi r1, 0xa000
 ldi r2, 14
 int 2
 ldi r0, 5
-ldi r1, 2
+ldi r1, 4
 ldi r2, fayl_text
 ldi r3, 14
 int 2
 cmpi r0, 14
 jne demo_fail
 ldi r0, 7
-ldi r1, 2
+ldi r1, 4
 int 2
 cmpi r0, 0
 jne demo_fail
 ldi r0, 6
-ldi r1, 2
+ldi r1, 4
 ldi r2, 0xa100
 ldi r3, 256
 int 2
@@ -628,7 +950,7 @@ int 2
 cmpi r0, 65535
 jne demo_fail
 ldi r0, 5
-ldi r1, 5
+ldi r1, 9
 ldi r2, fayl_text
 ldi r3, 14
 int 2
@@ -693,3 +1015,9 @@ fayl_text:
 .str "file from RAM\n"
 awake_text:
 .str "awake A\n"
+imya_games:
+.str "games"
+imya_doom:
+.str "doom"
+doom_zero:
+.byte 100, 111, 111, 109, 0, 0, 0, 0

@@ -18,7 +18,8 @@ pub fn talon<T>(delo: Result<T, String>) -> T {
 
 pub fn proverit_args(args: &[String]) -> Result<(), String> {
     let okna = [("--pack", 2usize), ("--lua", 1), ("--asm", 1), ("--seed", 1),
-                ("--razduv", 2), ("--unrazduv", 2), ("--seal-mega", 1), ("--mega-image", 1)];
+                ("--razduv", 2), ("--unrazduv", 2), ("--seal-mega", 1), ("--mega-image", 1),
+                ("--wad-nand", 1)];
     for i in 1..args.len() {
         for &(flag, count) in okna.iter() {
             if args[i] != flag { continue; }

@@ -45,7 +45,7 @@ const ZONY: &'static [Zona] = &[
         guard: "src/apps/guard.rs",
         stride: 1,
         cpu: None,
-        files: &["src/mega_os/mod.rs", "src/mega_os/boot.rs", "src/mega_os/kernel.rs", "src/mega_os/kernel.asm", "src/mega_os/rebenok.asm", "src/apps/mod.rs", "src/apps/hello.asm", "src/apps/privet_iz_pelmenya.txt", "src/apps/privet_iz_pelmenya.rzd", "src/apps/hello.c", "src/apps/quine.c", "src/apps/quine.lua", "src/apps/chess.c", "src/apps/raycast.c", "src/apps/selftest.asm", "src/apps/player.asm", "src/apps/vblank.asm", "src/apps/term/mod.rs", "src/apps/term/doom.rs", "src/apps/term/demon_v_tapke.rs", "src/apps/term/model.rs", "src/apps/term/shaderview.rs", "src/apps/term/audio.rs", "src/apps/term/player.rs", "src/apps/term/font.rs", "src/apps/guard.rs"],
+        files: &["src/mega_os/mod.rs", "src/mega_os/boot.rs", "src/mega_os/kernel.rs", "src/mega_os/kernel.asm", "src/mega_os/rebenok.asm", "src/apps/mod.rs", "src/apps/hello.asm", "src/apps/privet_iz_pelmenya.txt", "src/apps/privet_iz_pelmenya.rzd", "src/apps/hello.c", "src/apps/quine.c", "src/apps/quine.lua", "src/apps/chess.c", "src/apps/raycast.c", "src/apps/wad.c", "src/apps/selftest.asm", "src/apps/player.asm", "src/apps/vblank.asm", "src/apps/color.asm", "src/apps/term/mod.rs", "src/apps/term/doom.rs", "src/apps/term/demon_v_tapke.rs", "src/apps/term/model.rs", "src/apps/term/shaderview.rs", "src/apps/term/audio.rs", "src/apps/term/player.rs", "src/apps/term/font.rs", "src/apps/guard.rs"],
     },
     Zona {
         imya: "junk (Жорик)",

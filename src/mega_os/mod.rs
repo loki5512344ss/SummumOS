@@ -69,6 +69,10 @@ mod tests {
         let otchet = kernel::proverit_megu(&mut mega.bus).unwrap();
         assert_eq!(otchet.execs, 1);
         assert_eq!(otchet.exited, 4);
+        assert_eq!(otchet.dirs, 1);
+        assert_eq!(otchet.opens, 1);
+        assert_eq!(otchet.creates, 1);
+        assert!(otchet.readdirs >= 1);
         for pid in 0..4u16 {
             assert_eq!(mega.bus.peek(0x8002 + pid * 32), 0, "процесс {} не завершился", pid);
             assert_eq!(mega.bus.peek(0x8008 + pid * 32), 0, "процесс {} оставил ошибку", pid);

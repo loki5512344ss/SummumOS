@@ -158,6 +158,36 @@ fn main() {
         return;
     }
 
+    // WAD-парсер: файл лежит на эмулируемом диске и читается побайтно.
+    // В RAM его никто не грузит -- 64 КБ не резиновые.
+    if let Some(i) = args.iter().position(|a| a == "--wad-nand") {
+        let path = args[i + 1].clone();
+        let wad = read_file(&path);
+        if wad.len() > 0xFFFFFF {
+            talon(Err::<(), String>(format!("{}: WAD больше 24-битного диска ({} байт)",
+                path, wad.len())));
+        }
+        let asm_text = talon(compile_c_big(WAD.as_bytes().to_vec()));
+        let image = talon(asm::assemble(&asm_text));
+        let mut bus = bus::Bus::new(0);
+        bus.load();
+        bus.attach_disk(wad);
+        talon(bus.reset(&image));
+        bus.capture_uart();
+        let mut cpu = cpu::Cpu::new();
+        while !cpu.halted && cpu.cycles < 20_000_000 {
+            cpu.step(&mut bus);
+        }
+        let out = bus.take_captured();
+        print!("{}", String::from_utf8_lossy(&out));
+        talon(if cpu.halted {
+            Ok(())
+        } else {
+            Err("WAD-парсер не остановился за 20 миллионов тактов".to_string())
+        });
+        return;
+    }
+
     if args.iter().any(|a| a == "--mega-os") {
         let path = args.iter().position(|a| a == "--mega-image")
             .map(|i| ::std::path::Path::new(&args[i + 1]));

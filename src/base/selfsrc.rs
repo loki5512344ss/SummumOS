@@ -44,9 +44,11 @@ pub fn self_src() -> String {
     s.push_str(include_str!("../apps/quine.lua"));
     s.push_str(include_str!("../apps/chess.c"));
     s.push_str(include_str!("../apps/raycast.c"));
+    s.push_str(include_str!("../apps/wad.c"));
     s.push_str(include_str!("../apps/selftest.asm"));
     s.push_str(include_str!("../apps/player.asm"));
     s.push_str(include_str!("../apps/vblank.asm"));
+    s.push_str(include_str!("../apps/color.asm"));
     s.push_str(include_str!("../apps/term/mod.rs"));
     s.push_str(include_str!("../apps/term/doom.rs"));
     s.push_str(include_str!("../apps/term/demon_v_tapke.rs"));
