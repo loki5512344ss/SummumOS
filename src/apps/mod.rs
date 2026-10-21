@@ -10,6 +10,9 @@ pub const QUINE_LUA: &'static str = include_str!("quine.lua");
 pub const QUINE_C: &'static str = include_str!("quine.c");
 /// Шахматы. Написаны на C плохо и нарочно, потому что человек сказал "ещё какой-нибудь говнокод".
 pub const CHESS_C: &'static str = include_str!("chess.c");
+/// Рейкастер. 64 луча, 24 строки, ни одного честного пикселя: только буквы,
+/// которые делают вид, что они стены. Компилируется тем же C, что и шахматы.
+pub const RAYCAST: &'static str = include_str!("raycast.c");
 pub const SELFTEST: &'static str = include_str!("selftest.asm");
 pub const PLAYER: &'static str = include_str!("player.asm");
 pub const HELLO: &'static str = include_str!("hello.asm");
@@ -55,3 +58,44 @@ pub fn quine_main() -> i32 {
 }
 pub mod guard;
 pub mod term;
+
+#[cfg(test)]
+mod raycast_tests {
+    /// Рейкастер обязан доехать до конца, сказать итоговую строку и оставить
+    /// в видеопамяти кадр, а не ровное поле из пробелов. Кадр печатаем:
+    /// при --nocapture его видно, и можно делать вид, что это Doom.
+    #[test]
+    fn raycast_draws_eight_frames_on_the_nand_cpu() {
+        let t0 = ::std::time::Instant::now();
+        let asm_text = ::compile_c_big(::RAYCAST.as_bytes().to_vec()).ok().unwrap();
+        let t1 = ::std::time::Instant::now();
+        let image = ::asm::assemble(&asm_text).ok().unwrap();
+        let mut bus = ::bus::Bus::new(0);
+        bus.load();
+        bus.reset(&image).unwrap();
+        bus.capture_uart();
+        let mut cpu = ::cpu::Cpu::new();
+        while !cpu.halted && cpu.cycles < 20_000_000 {
+            cpu.step(&mut bus);
+        }
+        assert!(cpu.halted, "рейкастер не остановился за 20 миллионов тактов");
+        eprintln!("[raycast] компиляция {:?}, тактов {}, всего {:?}",
+            t1.duration_since(t0), cpu.cycles, t0.elapsed());
+        let out = String::from_utf8_lossy(&bus.take_captured()).to_string();
+        assert!(out.contains("raycast 64x24 8 frames\n"), "UART сказал: {}", out);
+        let mut lit = 0usize;
+        let mut frame = String::new();
+        for y in 0..::bus::VID_H {
+            for x in 0..::bus::VID_W {
+                let b = bus.peek(::bus::VRAM + (y * ::bus::VID_W + x) as u16);
+                if b != b' ' && b != 0 {
+                    lit += 1;
+                }
+                frame.push(if b >= 32 && b < 127 { b as char } else { ' ' });
+            }
+            frame.push('\n');
+        }
+        println!("{}", frame);
+        assert!(lit > 100, "в кадре всего {} непустых клеток", lit);
+    }
+}

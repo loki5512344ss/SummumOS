@@ -38,6 +38,7 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
         ("mega_os/boot.rs", include_str!("../mega_os/boot.rs")),
         ("mega_os/kernel.rs", include_str!("../mega_os/kernel.rs")),
         ("mega_os/kernel.asm", include_str!("../mega_os/kernel.asm")),
+        ("mega_os/rebenok.asm", include_str!("../mega_os/rebenok.asm")),
         ("apps/mod.rs", include_str!("mod.rs")),
         ("apps/hello.asm", include_str!("hello.asm")),
         ("apps/privet_iz_pelmenya.txt", include_str!("privet_iz_pelmenya.txt")),
@@ -46,8 +47,10 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
         ("apps/quine.c", include_str!("quine.c")),
         ("apps/quine.lua", include_str!("quine.lua")),
         ("apps/chess.c", include_str!("chess.c")),
+        ("apps/raycast.c", include_str!("raycast.c")),
         ("apps/selftest.asm", include_str!("selftest.asm")),
         ("apps/player.asm", include_str!("player.asm")),
+        ("apps/vblank.asm", include_str!("vblank.asm")),
         ("apps/term/mod.rs", include_str!("term/mod.rs")),
         ("apps/term/doom.rs", include_str!("term/doom.rs")),
         ("apps/term/demon_v_tapke.rs", include_str!("term/demon_v_tapke.rs")),
@@ -60,7 +63,7 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-pub const SUMMA: u32 = 0x7936011b; // СУММА: 0x7936011b
+pub const SUMMA: u32 = 0x70c2f47b; // СУММА: 0x70c2f47b
 
 pub fn summa() -> u32 { check::zone_sum(&files(), 1) }
 pub fn check_own() -> bool {

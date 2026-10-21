@@ -318,11 +318,13 @@ impl Cpu {
     pub fn step(&mut self, bus: &mut Bus) {
         bus.tick();
         if self.ie {
-            // сначала страшное, потом простое
+            // сначала страшное, потом простое, потом кино
             if bus.take_fault() {
                 self.enter(bus, 5);
             } else if bus.take_irq() {
                 self.enter(bus, 1);
+            } else if bus.take_vblank() {
+                self.enter(bus, 6);
             }
         }
         self.decode(bus);

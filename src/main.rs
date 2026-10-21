@@ -135,6 +135,29 @@ fn main() {
     let event_nand = args.iter().any(|a| a == "--event-nand");
     gates::vypustit_golubey(event_nand);
 
+    // Рейкастер: C компилируется на Lua, ассемблируется в NAND и едет по шине.
+    // В кадре 64 на 24 буквы, поэтому это, конечно, Doom.
+    if args.iter().any(|a| a == "--raycast-nand") {
+        let asm_text = talon(compile_c_big(RAYCAST.as_bytes().to_vec()));
+        let image = talon(asm::assemble(&asm_text));
+        let mut bus = bus::Bus::new(0);
+        bus.load();
+        talon(bus.reset(&image));
+        bus.capture_uart();
+        let mut cpu = cpu::Cpu::new();
+        while !cpu.halted && cpu.cycles < 20_000_000 {
+            cpu.step(&mut bus);
+        }
+        let out = bus.take_captured();
+        print!("{}", String::from_utf8_lossy(&out));
+        talon(if cpu.halted {
+            Ok(())
+        } else {
+            Err("рейкастер не остановился за 20 миллионов тактов".to_string())
+        });
+        return;
+    }
+
     if args.iter().any(|a| a == "--mega-os") {
         let path = args.iter().position(|a| a == "--mega-image")
             .map(|i| ::std::path::Path::new(&args[i + 1]));

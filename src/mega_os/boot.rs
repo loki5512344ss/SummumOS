@@ -24,6 +24,7 @@ pub fn otpechatok() -> u64 {
         ("mega_os/boot.rs", include_bytes!("boot.rs")),
         ("mega_os/kernel.rs", include_bytes!("kernel.rs")),
         ("mega_os/kernel.asm", include_bytes!("kernel.asm")),
+        ("mega_os/rebenok.asm", include_bytes!("rebenok.asm")),
         ("hw/cpu.rs", include_bytes!("../hw/cpu.rs")),
         ("hw/isa.rs", include_bytes!("../hw/isa.rs")),
         ("hw/alu.rs", include_bytes!("../hw/alu.rs")),

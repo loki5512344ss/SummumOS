@@ -73,7 +73,9 @@ ldi r0, 32832
 st [r0], sp
 ldi r1, 1
 st [r0+2], r1
-ldi sp, 48128
+; бездельника больше не прописываем в слот 3: слот отдан ребёнку из файла.
+; но кадр бездельника всё равно собираем, чтобы планировщику было куда падать.
+ldi sp, 0xbf00
 ldi r0, bezdelnik
 push r0
 ldi r0, 8
@@ -86,10 +88,8 @@ push r0
 push r0
 push r0
 push r0
-ldi r0, 32864
+ldi r0, 0x8138
 st [r0], sp
-ldi r1, 1
-st [r0+2], r1
 ldi r0, 0x8100
 ldi r1, 3
 st [r0], r1
@@ -175,6 +175,8 @@ cmpi r0, 6
 je fs_read
 cmpi r0, 7
 je fs_unlink
+cmpi r0, 8
+je exec
 jmp oshibka
 pechat:
 ld r1, [sp+10]
@@ -325,6 +327,106 @@ jmp vernut
 net_fayla:
 ldi r0, 65534
 jmp fs_error
+; --- INT 2, номер 8: exec. процесс вылезает из файла, как червяк из банки ---
+exec:
+ld r1, [sp+10]
+cmpi r1, 1
+jlt exec_otkaz
+cmpi r1, 5
+jge exec_otkaz
+ld r2, [sp+8]
+cmpi r2, 0x2000
+jlt exec_otkaz
+cmpi r2, 0xf000
+jge exec_otkaz
+ld r3, [sp+6]
+cmpi r3, 0x2000
+jlt exec_otkaz
+cmpi r3, 0xf000
+jge exec_otkaz
+ldi r0, 1
+and r0, r3, r0
+jnz r0, exec_otkaz
+addi r1, r1, -1
+ldi r4, 272
+mul r4, r1, r4
+addi r4, r4, 0x9000
+ld r0, [r4]
+jz r0, exec_net_fayla
+ld r5, [r4+2]
+jz r5, exec_net_fayla
+add r0, r2, r5
+cmp r0, r2
+jlt exec_otkaz
+cmpi r0, 0xf001
+jge exec_otkaz
+ldi r1, 0
+ldi r6, 0x8000
+exec_poisk:
+ld r0, [r6+2]
+jz r0, exec_nashli
+addi r6, r6, 32
+addi r1, r1, 1
+cmpi r1, 4
+jlt exec_poisk
+jmp exec_otkaz
+exec_nashli:
+addi r4, r4, 16
+push r2
+exec_kopiya:
+jz r5, exec_kadr
+ldb r0, [r4]
+stb [r2], r0
+addi r4, r4, 1
+addi r2, r2, 1
+addi r5, r5, -1
+jmp exec_kopiya
+exec_kadr:
+pop r2
+mov r6, sp
+mov sp, r3
+push r2
+ldi r0, 8
+push r0
+ldi r0, 0
+push r0
+push r0
+push r0
+push r0
+push r0
+push r0
+push r0
+mov r5, sp
+mov sp, r6
+shl r6, r1, 5
+addi r6, r6, 0x8000
+st [r6], r5
+ldi r0, 1
+st [r6+2], r0
+ldi r0, 0
+st [r6+4], r0
+st [r6+6], r0
+st [r6+8], r0
+ldi r0, 0x8124
+ld r2, [r0]
+addi r2, r2, 1
+st [r0], r2
+mov r0, r1
+jmp vernut
+exec_net_fayla:
+ldi r0, 0x8126
+ld r1, [r0]
+addi r1, r1, 1
+st [r0], r1
+ldi r0, 65534
+jmp fs_error
+exec_otkaz:
+ldi r0, 0x8126
+ld r1, [r0]
+addi r1, r1, 1
+st [r0], r1
+ldi r0, 65535
+jmp fs_error
 oshibka:
 ldi r0, 65535
 fs_error:
@@ -339,16 +441,18 @@ vybrat:
 ldi r0, 0x8000
 ld r1, [r0+2]
 ld r2, [r0+34]
-ld r3, [r0+66]
 or r1, r1, r2
-or r1, r1, r3
+ld r2, [r0+66]
+or r1, r1, r2
+ld r2, [r0+98]
+or r1, r1, r2
 jz r1, vse
 ldi r0, 0x8100
 ld r1, [r0]
-ldi r3, 3
+ldi r3, 4
 iskat:
 addi r1, r1, 1
-cmpi r1, 3
+cmpi r1, 4
 jlt nomer_gotov
 ldi r1, 0
 nomer_gotov:
@@ -359,8 +463,12 @@ cmpi r4, 1
 je nashli
 addi r3, r3, -1
 jnz r3, iskat
+; все спят, а бездельник всё равно не спит. сажаем его на табуретку.
 ldi r1, 3
 ldi r2, 0x8060
+ldi r6, 0x8138
+ld r6, [r6]
+st [r2], r6
 nashli:
 ld r3, [r0]
 cmp r3, r1
@@ -412,6 +520,30 @@ ldi r1, 1
 st [r0], r1
 ldi r0, 0x8102
 ld r4, [r0]
+; --- демо exec: ребёнок лежит в файле 3, дырка 0x4000 пуста, как холодильник ---
+ldi r0, 5
+ldi r1, 3
+ldi r2, 0x4000
+ldi r3, @REBENOK_LEN@
+int 2
+cmpi r0, @REBENOK_LEN@
+jne demo_fail
+ldi r0, 0x4000
+ldi r1, @REBENOK_LEN@
+addi r1, r1, 0x4000
+ldi r6, 0
+rebenok_stert:
+stb [r0], r6
+addi r0, r0, 1
+cmp r0, r1
+jlt rebenok_stert
+ldi r0, 8
+ldi r1, 3
+ldi r2, 0x4000
+ldi r3, 0xbc00
+int 2
+cmpi r0, 3
+jne demo_fail
 ldi r0, 2
 ldi r1, 3
 int 2
@@ -426,6 +558,19 @@ ldi r0, 1
 ldi r1, awake_text
 ldi r2, 8
 int 2
+; ребёнок уже должен был умереть. если нет -- ждём и уступаем.
+rebenok_zhdet:
+ldi r0, 0x8062
+ld r1, [r0]
+cmpi r1, 1
+jne rebenok_umer
+ldi r0, 3
+int 2
+jmp rebenok_zhdet
+rebenok_umer:
+ldi r0, 0x8068
+ld r1, [r0]
+jnz r1, demo_fail
 ldi r0, 4
 ldi r1, 0
 int 2

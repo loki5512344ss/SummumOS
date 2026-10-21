@@ -66,6 +66,10 @@ pub fn vse() -> Vec<Lozh> {
         Lozh { mesto: "bubble::klass_simvola", govorit: "класс символа по таблицам Unicode", delaet: "смотрит только на ASCII 32..126, руками, через 129 веток match", priznak: "pub fn klass_simvola" },
         Lozh { mesto: "bubble::kontrolnaya_summa8", govorit: "контрольная сумма восьми байтов", delaet: "считает её дважды копипастой и выбрасывает второй результат", priznak: "pub fn kontrolnaya_summa8" },
         Lozh { mesto: "execute_me::proverka_razmerov", govorit: "проверяет, что все размеры на месте", delaet: "возвращает длину списка и больше ничего не делает", priznak: "pub fn proverka_razmerov" },
+        Lozh { mesto: "vblank", govorit: "ждёт обратный ход луча монитора", delaet: "поднимает флаг сразу после записи кадра в stdout", priznak: "pub fn take_vblank" },
+        Lozh { mesto: "двойная буферизация", govorit: "гость рисует в 0xF000", delaet: "подсовывает под 0xF000 вторую страницу в 0xC000", priznak: "fn video_window" },
+        Lozh { mesto: "рейкастер на C", govorit: "настоящий Doom на NAND-процессоре", delaet: "64 луча по карте 16 на 16 печатают буквы в текстовую видеопамять", priznak: "int march" },
+        Lozh { mesto: "exec", govorit: "загружает процесс из файловой системы", delaet: "копирует байты из RAM-ФС в заранее известную дырку 0x4000", priznak: "exec_kadr" },
     ]
 }
 

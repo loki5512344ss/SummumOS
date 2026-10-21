@@ -1,6 +1,11 @@
 // ===========================================================================
 // bus: шина. Тут память и один (1) УАРТ. 0xFF00 -- сюда пишем, 0xFF01 -- сюда лучше не смотреть
 // (чертёж №3: карта памяти, на ней нарисован УАРТ, он как на картинке)
+// Карта: 0x0000 код, 0x0100 склад с расписками, 0x7000 счётчик кадров,
+// 0xC000 вторая страница текста (её как бы нет), 0xF000 первая страница текста,
+// 0xFB00 таблица страниц, 0xFE00 векторы, 0xFF00 УАРТ и прочие железки.
+// 0xFF20 -- показать кадр, 0xFF26 -- какая страница считается первой.
+// Вторая страница притворяется первой. Не говори об этом таблице страниц.
 // ===========================================================================
 use alu;
 use word::Word;
@@ -26,6 +31,12 @@ pub const VRAM: u16 = 0xF000;
 pub const VID_W: usize = 64;
 pub const VID_H: usize = 24;
 pub const VID_CTL: u16 = 0xFF20;
+/// Скрытая страница видео. Бит 0: ноль -- рисуем в 0xF000, один -- в 0xC000.
+pub const VID_PAGE: u16 = 0xFF26;
+/// Вторая текстовая страница. Гость о ней не знает, а она всё видит.
+pub const VID_BACK: u16 = 0xC000;
+/// 64 на 24 байта. 1536 -- это как две тысячи, только меньше.
+pub const VID_PAGE_LEN: u16 = 1536;
 /// Регистры новых железок: генератор случайных чисел и кэш с MMU.
 pub const RNG: u16 = 0xFF21;
 pub const CACHE_HIT: u16 = 0xFF22;
@@ -334,6 +345,8 @@ pub struct Bus {
     rng: u16,
     mmu: bool,
     fault: bool,
+    vid_page: u8,
+    vblank: bool,
     pub cache: Cache,
 }
 
@@ -383,6 +396,8 @@ impl Bus {
             rng: 0xACE1,
             mmu: false,
             fault: false,
+            vid_page: 0,
+            vblank: false,
             cache: Cache::new(),
         }
     }
@@ -420,6 +435,18 @@ impl Bus {
         }
         let page = (entry & 0x00ff) << 8;
         Some(page | (addr & 0x00ff))
+    }
+
+    /// Вторая страница живёт по адресу 0xC000 и прикидывается первой.
+    /// Сначала врёт MMU, потом врёт видео: наоборот нельзя, иначе таблица
+    /// страниц увидит чужую мебель и вызовет пожарного.
+    fn video_window(&self, addr: u16) -> u16 {
+        if self.vid_page & 1 == 1 && addr >= VRAM && addr < VRAM + VID_PAGE_LEN {
+            let delta = alu::sub(Word::from_u16(addr), Word::from_u16(VRAM));
+            alu::add(Word::from_u16(VID_BACK), delta).0.to_u16()
+        } else {
+            addr
+        }
     }
 
     // проверено картофелем. картофель отказался от комментариев.
@@ -506,6 +533,18 @@ impl Bus {
         let f = self.fault;
         self.fault = false;
         f
+    }
+
+    /// Забирает кадровый звоночек. Если обработчик шестого вектора спит или
+    /// его вообще не прописали -- звоночек сгорает, и никто не паникует.
+    pub fn take_vblank(&mut self) -> bool {
+        if !self.vblank {
+            return false;
+        }
+        self.vblank = false;
+        let at = (VTABLE + 6 * 2) as usize;
+        let handler = self.ram[at] as u16 | ((self.ram[at + 1] as u16) << 8);
+        handler != 0
     }
 
     pub fn cache_stats(&self) -> (u64, u64) {
@@ -651,6 +690,23 @@ impl Bus {
         self.video.next = None;
     }
 
+    /// Собирает текст выбранной страницы. Ноль -- та, что нарисована на бумаге,
+    /// один -- та, что лежит под ней и делает вид, что её нет.
+    pub fn text_page(&self, page: u8) -> String {
+        let base = if page & 1 == 1 { VID_BACK } else { VRAM };
+        let mut s = String::new();
+        for y in 0..VID_H {
+            for x in 0..VID_W {
+                let b = self.ram[base as usize + y * VID_W + x];
+                s.push(if b >= 32 && b < 127 { b as char } else { ' ' });
+            }
+            if y + 1 < VID_H {
+                s.push('\n');
+            }
+        }
+        s
+    }
+
     /// Рисует кадр. Рисует его туда, где его никто не просил: в терминал.
     fn present(&mut self) {
         let mut s = String::new();
@@ -659,15 +715,7 @@ impl Bus {
             self.video.started = true;
         }
         s.push_str("\x1b[H");
-        for y in 0..VID_H {
-            for x in 0..VID_W {
-                let b = self.ram[VRAM as usize + y * VID_W + x];
-                s.push(if b >= 32 && b < 127 { b as char } else { ' ' });
-            }
-            if y + 1 < VID_H {
-                s.push('\n');
-            }
-        }
+        s.push_str(&self.text_page(self.vid_page & 1));
         if self.video.fps > 0 {
             let frame = Duration::from_micros(1_000_000 / self.video.fps);
             let now = Instant::now();
@@ -685,6 +733,8 @@ impl Bus {
         h.write_all(s.as_bytes()).unwrap();
         h.flush().unwrap();
         self.video.frames += 1;
+        // кадр ушёл. теперь можно звонить в шестой вектор, но не громко.
+        self.vblank = true;
         let fr = if self.video.fps > 0 {
             self.video.fps
         } else {
@@ -814,6 +864,7 @@ impl Bus {
             Some(a) => a,
             None => return 0,
         };
+        let addr = self.video_window(addr);
         if self.uart.busy > 0 {
             self.uart.busy -= 1;
         }
@@ -861,6 +912,9 @@ impl Bus {
             self.fault = false;
             return if f { 1 } else { 0 };
         }
+        if addr == VID_PAGE {
+            return self.vid_page & 1;
+        }
         if addr >= 0xFF00 {
             return 0;
         }
@@ -872,6 +926,7 @@ impl Bus {
             Some(a) => a,
             None => return,
         };
+        let addr = self.video_window(addr);
         if addr == UART_TX {
             self.uart.tx(v);
             return;
@@ -928,6 +983,10 @@ impl Bus {
         }
         if addr == MMU_FAULT {
             self.fault = false;
+            return;
+        }
+        if addr == VID_PAGE {
+            self.vid_page = v & 1;
             return;
         }
         if addr >= 0xFF00 {
@@ -1182,5 +1241,68 @@ mod ram_case_tests {
         assert!(!bus.take_fault());
         bus.poke(0x0100, 99);
         assert_eq!(bus.peek(0x0100), 99);
+    }
+}
+
+#[cfg(test)]
+mod vblank_tests {
+    use super::*;
+    use ::cpu::Cpu;
+
+    fn gonjat(image: &[u8], limit: u64) -> Bus {
+        let mut bus = Bus::new(0);
+        bus.load();
+        bus.reset(image).unwrap();
+        let mut cpu = Cpu::new();
+        while !cpu.halted && cpu.cycles < limit {
+            cpu.step(&mut bus);
+        }
+        assert!(cpu.halted, "машина не остановилась, кадры идут без спроса");
+        bus
+    }
+
+    fn stranica_iz(b: char) -> String {
+        let mut row = String::new();
+        for _ in 0..VID_W {
+            row.push(b);
+        }
+        let mut s = String::new();
+        for y in 0..VID_H {
+            if y > 0 {
+                s.push('\n');
+            }
+            s.push_str(&row);
+        }
+        s
+    }
+
+    #[test]
+    fn vblank_dvigaet_stranicy_i_posledniy_kadr_sovpadaet() {
+        let image = ::asm::assemble(include_str!("../apps/vblank.asm")).unwrap();
+        let mut bus = gonjat(&image, 2_000_000);
+        let counter = bus.peek(0x7000) as u16 | ((bus.peek(0x7001) as u16) << 8);
+        assert_eq!(counter, 4);
+        assert_eq!(bus.text_page(0), stranica_iz('*'));
+        assert_eq!(bus.text_page(1), stranica_iz('#'));
+        assert_ne!(bus.text_page(0), bus.text_page(1));
+        assert_eq!(bus.peek(VID_PAGE) & 1, 0);
+        assert!(!bus.take_vblank());
+    }
+
+    #[test]
+    fn present_bez_obrabotchika_shego_vektora_ne_padaet() {
+        let src = "ldi sp, 0xE000\n\
+                   ldi r0, 'A'\n\
+                   ldi r1, 0xF000\n\
+                   stb [r1+0], r0\n\
+                   ldi r0, 1\n\
+                   ldi r1, 0xFF20\n\
+                   stb [r1+0], r0\n\
+                   sti\n\
+                   hlt\n";
+        let image = ::asm::assemble(src).unwrap();
+        let mut bus = gonjat(&image, 2_000_000);
+        assert!(bus.text_page(0).starts_with("A"));
+        assert!(!bus.take_vblank());
     }
 }

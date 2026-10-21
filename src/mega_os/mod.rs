@@ -66,11 +66,17 @@ mod tests {
             mega.cpu.step(&mut mega.bus);
         }
         assert!(mega.cpu.halted, "Мега-ОС не завершила гостевой сценарий");
-        kernel::proverit_megu(&mut mega.bus).unwrap();
+        let otchet = kernel::proverit_megu(&mut mega.bus).unwrap();
+        assert_eq!(otchet.execs, 1);
+        assert_eq!(otchet.exited, 4);
+        for pid in 0..4u16 {
+            assert_eq!(mega.bus.peek(0x8002 + pid * 32), 0, "процесс {} не завершился", pid);
+            assert_eq!(mega.bus.peek(0x8008 + pid * 32), 0, "процесс {} оставил ошибку", pid);
+        }
         let text = String::from_utf8(mega.bus.take_captured()).unwrap();
-        for line in &["MEGA OS", "worker B", "file from RAM", "awake A"] {
+        for line in &["MEGA OS", "worker B", "file from RAM", "awake A", "child"] {
             assert_eq!(text.lines().filter(|v| v == line).count(), 1, "{}", text);
         }
-        assert_eq!(text.lines().count(), 4, "{}", text);
+        assert_eq!(text.lines().count(), 5, "{}", text);
     }
 }
