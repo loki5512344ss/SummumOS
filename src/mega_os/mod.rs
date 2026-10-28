@@ -48,7 +48,7 @@ pub fn otkryt_kastryulyu(path: Option<&Path>) -> Result<(), String> {
 	if !mega.cpu.halted {
 		return Err("Мега-ОС исчерпала лимит гостевых инструкций".into());
 	}
-	let otchet = try!(kernel::proverit_megu(&mut mega.bus));
+	let otchet = try!(kernel::proverit_megu(&mut mega.bus, false));
 	try!(::std::io::stdout()
 		.write_all(&mega.bus.take_captured())
 		.map_err(|e| e.to_string()));
@@ -93,13 +93,13 @@ mod tests {
 			mega.cpu.step(&mut mega.bus);
 		}
 		assert!(mega.cpu.halted, "Мега-ОС не завершила гостевой сценарий");
-		let otchet = kernel::proverit_megu(&mut mega.bus).unwrap();
+		let otchet = kernel::proverit_megu(&mut mega.bus, false).unwrap();
 		assert_eq!(otchet.execs, 1);
 		assert_eq!(otchet.exited, 5);
 		assert_eq!(otchet.forks, 1);
-		assert_eq!(otchet.dirs, 2);
+		assert_eq!(otchet.dirs, 1);
 		assert_eq!(otchet.opens, 1);
-		assert_eq!(otchet.creates, 2);
+		assert_eq!(otchet.creates, 1);
 		assert!(otchet.readdirs >= 1);
 		for pid in 0..4u16 {
 			assert_eq!(

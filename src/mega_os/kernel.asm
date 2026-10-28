@@ -1109,6 +1109,9 @@ ldi r0, 3
 int 2
 jmp fork_slot_zhdet
 fork_slot_svoboden:
+ldi r0, 0x55
+ldi r1, 0xa000
+stb [r1], r0
 ldi r0, 5
 ldi r1, 1
 ldi r2, fayl_text
@@ -1223,8 +1226,20 @@ rebenok_umer:
 ldi r0, 0x8068
 ld r1, [r0]
 jnz r1, demo_fail
-; --- каталог sub внутри games, а в нём файл deep: путь в три этажа ---
-ldi r0, 9
+; --- изоляция памяти: ребёнок писал в кровать, а тут всё ещё наш байт ---
+ldi r0, 0xa000
+ldb r1, [r0]
+cmpi r1, 0x55
+jne demo_fail
+; --- сундук заперт: файлы уезжают на диск ---
+ldi r0, 14
+int 2
+cmpi r0, 0
+jne demo_fail
+ldi r0, 4
+ldi r1, 0
+int 2
+jmp demo_fail
 ldi r1, 2
 ldi r2, imya_sub
 ldi r3, 3

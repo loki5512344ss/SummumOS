@@ -5,6 +5,10 @@ ldi r0, 1
 ldi r1, rebenok_text
 ldi r2, 6
 int 2
+; --- изоляция памяти: в своей квартире пишем чужой байт ---
+ldi r0, 0xaa
+ldi r1, 0xa000
+stb [r1], r0
 ldi r0, 4
 ldi r1, 0
 int 2
