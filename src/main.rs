@@ -91,395 +91,445 @@ use std::collections::HashMap;
 use std::io::Write;
 
 // Деревья папок: кто где лежит -- смотри чертёж «карта проекта» (она соврёт).
-mod hw;
-mod toolchain;
-mod lang;
 mod apps;
-mod junk;
-mod data;
-mod util;
 mod base;
 mod boss;
+mod data;
+mod hw;
+mod junk;
+mod lang;
 mod mega_os;
 #[cfg(test)]
 mod tests;
+mod toolchain;
+mod util;
 
 // Всё что угодно из любой папки доступно из корня и друг другу. Так надо.
-pub use hw::{alu, bus, cpu, gates, isa, word};
-pub use toolchain::{asm, pack, vedro_s_dyrkoy};
-pub use toolchain::cc::*;
-pub use lang::lua;
-pub use junk::bubble;
-pub use data::badapple;
-pub use data::rickroll;
-pub use data::rickroll_audio;
-pub use data::execute_me;
-pub use data::execute_me_audio;
 pub use apps::*;
 pub use base::cli::*;
-pub use base::selfsrc::self_src;
 pub use base::comments;
+pub use base::selfsrc::self_src;
+pub use data::badapple;
+pub use data::execute_me;
+pub use data::execute_me_audio;
+pub use data::rickroll;
+pub use data::rickroll_audio;
+pub use hw::{alu, bus, cpu, gates, isa, word};
+pub use junk::bubble;
+pub use lang::lua;
+pub use toolchain::cc::*;
+pub use toolchain::{asm, pack, vedro_s_dyrkoy};
 pub use util::hex::*;
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    talon(proverit_args(&args));
+	let args: Vec<String> = std::env::args().collect();
+	talon(proverit_args(&args));
 
-    if let Some(i) = args.iter().position(|a| a == "--seal-mega") {
-        talon(mega_os::zakryt_kastryulyu(::std::path::Path::new(&args[i + 1])));
-        return;
-    }
+	if let Some(i) = args.iter().position(|a| a == "--seal-mega") {
+		talon(mega_os::zakryt_kastryulyu(::std::path::Path::new(
+			&args[i + 1],
+		)));
+		return;
+	}
 
-    // Босс садится первым. Если кто-то из охранников не ответил -- дальше не поедем.
-    boss::sit();
-    let event_nand = args.iter().any(|a| a == "--event-nand");
-    gates::vypustit_golubey(event_nand);
+	// Босс садится первым. Если кто-то из охранников не ответил -- дальше не поедем.
+	boss::sit();
+	let event_nand = args.iter().any(|a| a == "--event-nand");
+	gates::vypustit_golubey(event_nand);
 
-    // Рейкастер: C компилируется на Lua, ассемблируется в NAND и едет по шине.
-    // В кадре 64 на 24 буквы, поэтому это, конечно, Doom.
-    if args.iter().any(|a| a == "--raycast-nand") {
-        let asm_text = talon(compile_c_big(RAYCAST.as_bytes().to_vec()));
-        let image = talon(asm::assemble(&asm_text));
-        let mut bus = bus::Bus::new(0);
-        bus.load();
-        talon(bus.reset(&image));
-        bus.capture_uart();
-        let mut cpu = cpu::Cpu::new();
-        while !cpu.halted && cpu.cycles < 20_000_000 {
-            cpu.step(&mut bus);
-        }
-        let out = bus.take_captured();
-        print!("{}", String::from_utf8_lossy(&out));
-        talon(if cpu.halted {
-            Ok(())
-        } else {
-            Err("рейкастер не остановился за 20 миллионов тактов".to_string())
-        });
-        return;
-    }
+	// Рейкастер: C компилируется на Lua, ассемблируется в NAND и едет по шине.
+	// В кадре 64 на 24 буквы, поэтому это, конечно, Doom.
+	if args.iter().any(|a| a == "--raycast-nand") {
+		let asm_text = talon(compile_c_big(RAYCAST.as_bytes().to_vec()));
+		let image = talon(asm::assemble(&asm_text));
+		let mut bus = bus::Bus::new(0);
+		bus.load();
+		talon(bus.reset(&image));
+		bus.capture_uart();
+		let mut cpu = cpu::Cpu::new();
+		while !cpu.halted && cpu.cycles < 20_000_000 {
+			cpu.step(&mut bus);
+		}
+		let out = bus.take_captured();
+		print!("{}", String::from_utf8_lossy(&out));
+		talon(if cpu.halted {
+			Ok(())
+		} else {
+			Err("рейкастер не остановился за 20 миллионов тактов".to_string())
+		});
+		return;
+	}
 
-    // WAD-парсер: файл лежит на эмулируемом диске и читается побайтно.
-    // В RAM его никто не грузит -- 64 КБ не резиновые.
-    if let Some(i) = args.iter().position(|a| a == "--wad-nand" || a == "--wad3d-nand") {
-        let walls = args[i] == "--wad3d-nand";
-        let path = args[i + 1].clone();
-        let wad = read_file(&path);
-        if wad.len() > 0xFFFFFF {
-            talon(Err::<(), String>(format!("{}: WAD больше 24-битного диска ({} байт)",
-                path, wad.len())));
-        }
-        let source = if walls { WAD3D } else { WAD };
-        let asm_text = talon(compile_c_big(source.as_bytes().to_vec()));
-        let image = talon(asm::assemble(&asm_text));
-        let mut bus = bus::Bus::new(0);
-        bus.load();
-        bus.attach_disk(wad);
-        talon(bus.reset(&image));
-        bus.capture_uart();
-        let mut cpu = cpu::Cpu::new();
-        while !cpu.halted && cpu.cycles < 20_000_000 {
-            cpu.step(&mut bus);
-        }
-        let out = bus.take_captured();
-        print!("{}", String::from_utf8_lossy(&out));
-        talon(if cpu.halted {
-            Ok(())
-        } else {
-            Err("WAD-парсер не остановился за 20 миллионов тактов".to_string())
-        });
-        if walls && cpu.r[0].to_u16() != 0 {
-            talon(Err::<(), String>("WAD-стены: гость отклонил карту".into()));
-        }
-        return;
-    }
+	// WAD-парсер: файл лежит на эмулируемом диске и читается побайтно.
+	// В RAM его никто не грузит -- 64 КБ не резиновые.
+	if let Some(i) = args
+		.iter()
+		.position(|a| a == "--wad-nand" || a == "--wad3d-nand")
+	{
+		let walls = args[i] == "--wad3d-nand";
+		let path = args[i + 1].clone();
+		let wad = read_file(&path);
+		if wad.len() > 0xFFFFFF {
+			talon(Err::<(), String>(format!(
+				"{}: WAD больше 24-битного диска ({} байт)",
+				path,
+				wad.len()
+			)));
+		}
+		let source = if walls { WAD3D } else { WAD };
+		let asm_text = talon(compile_c_big(source.as_bytes().to_vec()));
+		let image = talon(asm::assemble(&asm_text));
+		let mut bus = bus::Bus::new(0);
+		bus.load();
+		bus.attach_disk(wad);
+		talon(bus.reset(&image));
+		bus.capture_uart();
+		let mut cpu = cpu::Cpu::new();
+		while !cpu.halted && cpu.cycles < 20_000_000 {
+			cpu.step(&mut bus);
+		}
+		let out = bus.take_captured();
+		print!("{}", String::from_utf8_lossy(&out));
+		talon(if cpu.halted {
+			Ok(())
+		} else {
+			Err("WAD-парсер не остановился за 20 миллионов тактов".to_string())
+		});
+		if walls && cpu.r[0].to_u16() != 0 {
+			talon(Err::<(), String>("WAD-стены: гость отклонил карту".into()));
+		}
+		return;
+	}
 
-    if args.iter().any(|a| a == "--pixel-nand") {
-        let source = format!("{}\n{}", PIXEL, FONT8);
-        let image = talon(asm::assemble(&source));
-        let mut bus = bus::Bus::new(0);
-        bus.load();
-        talon(bus.reset(&image));
-        let mut cpu = cpu::Cpu::new();
-        while !cpu.halted && cpu.cycles < 100_000 { cpu.step(&mut bus); }
-        talon(if cpu.halted { Ok(()) } else { Err("пиксели не вернулись из отпуска".to_string()) });
-        return;
-    }
+	if args.iter().any(|a| a == "--pixel-nand") {
+		let source = format!("{}\n{}", PIXEL, FONT8);
+		let image = talon(asm::assemble(&source));
+		let mut bus = bus::Bus::new(0);
+		bus.load();
+		talon(bus.reset(&image));
+		let mut cpu = cpu::Cpu::new();
+		while !cpu.halted && cpu.cycles < 100_000 {
+			cpu.step(&mut bus);
+		}
+		talon(if cpu.halted {
+			Ok(())
+		} else {
+			Err("пиксели не вернулись из отпуска".to_string())
+		});
+		return;
+	}
 
-    if args.iter().any(|a| a == "--mega-os") {
-        let path = args.iter().position(|a| a == "--mega-image")
-            .map(|i| ::std::path::Path::new(&args[i + 1]));
-        talon(mega_os::otkryt_kastryulyu(path));
-        return;
-    }
+	if args.iter().any(|a| a == "--mega-os") {
+		let path = args
+			.iter()
+			.position(|a| a == "--mega-image")
+			.map(|i| ::std::path::Path::new(&args[i + 1]));
+		talon(mega_os::otkryt_kastryulyu(path));
+		return;
+	}
 
-    for &(flag, restore) in &[("--razduv", false), ("--unrazduv", true)] {
-        if let Some(i) = args.iter().position(|a| a == flag) {
-            talon(vedro_s_dyrkoy::pereselit_tapok(::std::path::Path::new(&args[i + 1]),
-                ::std::path::Path::new(&args[i + 2]), restore).map_err(|e| e.to_string()));
-            return;
-        }
-    }
+	for &(flag, restore) in &[("--razduv", false), ("--unrazduv", true)] {
+		if let Some(i) = args.iter().position(|a| a == flag) {
+			talon(
+				vedro_s_dyrkoy::pereselit_tapok(
+					::std::path::Path::new(&args[i + 1]),
+					::std::path::Path::new(&args[i + 2]),
+					restore,
+				)
+				.map_err(|e| e.to_string()),
+			);
+			return;
+		}
+	}
 
-    // «Проверка диска»: пишет в static mut и всегда возвращает true.
-    let _ = junk::prikol::check_disk_health();
+	// «Проверка диска»: пишет в static mut и всегда возвращает true.
+	let _ = junk::prikol::check_disk_health();
 
-    // Шанс беды включается только флагом: по умолчанию программа не зависает.
-    // Можно подсунуть байт числом: --unlucky 0 (паника), 20 (зависание), 40 (Hello, Wor).
-    if let Some(i) = args.iter().position(|a| a == "--unlucky") {
-        match args.get(i + 1).and_then(|s| s.parse::<u8>().ok()) {
-            Some(b) => junk::prikol::shans_bedy_with(b),
-            None => junk::prikol::shans_bedy(),
-        }
-    }
+	// Шанс беды включается только флагом: по умолчанию программа не зависает.
+	// Можно подсунуть байт числом: --unlucky 0 (паника), 20 (зависание), 40 (Hello, Wor).
+	if let Some(i) = args.iter().position(|a| a == "--unlucky") {
+		match args.get(i + 1).and_then(|s| s.parse::<u8>().ok()) {
+			Some(b) => junk::prikol::shans_bedy_with(b),
+			None => junk::prikol::shans_bedy(),
+		}
+	}
 
-    // Свой терминал: отдельное окно X11, свой шрифт и сетка. Без флагов --
-    // именно он, если есть DISPLAY или WAYLAND_DISPLAY. --term включает принудительно, --plain
-    // возвращает старое поведение (Hello, World! в этом терминале).
-    let wants_term = args.iter().any(|a| a == "--term")
-        || (args.len() == 1
-            && (std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok())
-            && std::env::var("SUMMUM_PLAIN").is_err());
-    if wants_term {
-        let rick = args.iter().any(|a| a == "--rickroll");
-        let exe = args.iter().any(|a| a == "--execute");
-        let auto = rick || exe || args.iter().any(|a| a == "--badapple") || args.iter().any(|a| a == "play");
-        let track = if rick {
-            1
-        } else if exe {
-            2
-        } else {
-            0
-        };
-        match term::run(auto, track) {
-            Ok(_) => return,
-            Err(e) => {
-                writeln!(std::io::stderr(), "свой терминал не открылся: {}. Работаем в обычном.", e).unwrap();
-            }
-        }
-    }
+	// Свой терминал: отдельное окно X11, свой шрифт и сетка. Без флагов --
+	// именно он, если есть DISPLAY или WAYLAND_DISPLAY. --term включает принудительно, --plain
+	// возвращает старое поведение (Hello, World! в этом терминале).
+	let wants_term = args.iter().any(|a| a == "--term")
+		|| (args.len() == 1
+			&& (std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok())
+			&& std::env::var("SUMMUM_PLAIN").is_err());
+	if wants_term {
+		let rick = args.iter().any(|a| a == "--rickroll");
+		let exe = args.iter().any(|a| a == "--execute");
+		let auto = rick
+			|| exe || args.iter().any(|a| a == "--badapple")
+			|| args.iter().any(|a| a == "play");
+		let track = if rick {
+			1
+		} else if exe {
+			2
+		} else {
+			0
+		};
+		match term::run(auto, track) {
+			Ok(_) => return,
+			Err(e) => {
+				writeln!(
+					std::io::stderr(),
+					"свой терминал не открылся: {}. Работаем в обычном.",
+					e
+				)
+				.unwrap();
+			}
+		}
+	}
 
-    // прогреваем бесполезности, чтобы потом не было стыдно
-    let _ = bubble::run_all();
+	// прогреваем бесполезности, чтобы потом не было стыдно
+	let _ = bubble::run_all();
 
-    // Проверка, что шапка с портретом и баннером никуда не убежала.
-    if args.iter().any(|a| a == "--comment-sum") {
-        let z = comments::zhivaya();
-        println!("{:#06x} {:#06x}", z.0, z.1);
-        return;
-    }
-    if !comments::vse_na_meste() {
-        writeln!(std::io::stderr(), "Комментарии убежали. Верните портрет на место, иначе не поедем.").unwrap();
-        std::process::exit(3);
-    }
+	// Проверка, что шапка с портретом и баннером никуда не убежала.
+	if args.iter().any(|a| a == "--comment-sum") {
+		let z = comments::zhivaya();
+		println!("{:#06x} {:#06x}", z.0, z.1);
+		return;
+	}
+	if !comments::vse_na_meste() {
+		writeln!(
+			std::io::stderr(),
+			"Комментарии убежали. Верните портрет на место, иначе не поедем."
+		)
+		.unwrap();
+		std::process::exit(3);
+	}
 
-    // Приветствие при запуске. Надпись лежит отдельным файлом: её рисовал не
-    // этот проект, а временный скрипт с pyfiglet (руками шрифт не рисовали,
-    // чтобы не получилось криво). Печатаем в stderr, чтобы не мешать выводу
-    // программы, а в --play молчим: там видео на весь экран.
-    if !args.iter().any(|a| a == "--play") {
-        write!(std::io::stderr(), "{}\n", include_str!("data/banner.txt")).unwrap();
-    }
+	// Приветствие при запуске. Надпись лежит отдельным файлом: её рисовал не
+	// этот проект, а временный скрипт с pyfiglet (руками шрифт не рисовали,
+	// чтобы не получилось криво). Печатаем в stderr, чтобы не мешать выводу
+	// программы, а в --play молчим: там видео на весь экран.
+	if !args.iter().any(|a| a == "--play") {
+		write!(std::io::stderr(), "{}\n", include_str!("data/banner.txt")).unwrap();
+	}
 
-    if let Some(i) = args.iter().position(|a| a == "--pack") {
-        let text = read_text(&args[i + 1]);
-        let snd: Vec<u8> = match args.get(i + 3) {
-            Some(p) if !p.starts_with("--") => read_file(p),
-            _ => Vec::new(),
-        };
-        let out = match pack::pack(&text, &snd) {
-            Ok(o) => o,
-            Err(e) => {
-                writeln!(std::io::stderr(), "упаковщик сломался: {}", e).unwrap();
-                std::process::exit(1);
-            }
-        };
-        talon(std::fs::write(&args[i + 2], &out)
-            .map_err(|e| format!("{}: {}", args[i + 2], e)));
-        writeln!(std::io::stderr(), "упаковано: {} байт", out.len()).unwrap();
-        return;
-    }
+	if let Some(i) = args.iter().position(|a| a == "--pack") {
+		let text = read_text(&args[i + 1]);
+		let snd: Vec<u8> = match args.get(i + 3) {
+			Some(p) if !p.starts_with("--") => read_file(p),
+			_ => Vec::new(),
+		};
+		let out = match pack::pack(&text, &snd) {
+			Ok(o) => o,
+			Err(e) => {
+				writeln!(std::io::stderr(), "упаковщик сломался: {}", e).unwrap();
+				std::process::exit(1);
+			}
+		};
+		talon(std::fs::write(&args[i + 2], &out).map_err(|e| format!("{}: {}", args[i + 2], e)));
+		writeln!(std::io::stderr(), "упаковано: {} байт", out.len()).unwrap();
+		return;
+	}
 
-    if let Some(i) = args.iter().position(|a| a == "--lua") {
-        let path = args[i + 1].clone();
-        let h = std::thread::Builder::new().stack_size(512 * 1024 * 1024).spawn(move || {
-            gates::vypustit_golubey(event_nand);
-            lua_main(&path)
-        }).unwrap();
-        std::process::exit(h.join().unwrap());
-    }
+	if let Some(i) = args.iter().position(|a| a == "--lua") {
+		let path = args[i + 1].clone();
+		let h = std::thread::Builder::new()
+			.stack_size(512 * 1024 * 1024)
+			.spawn(move || {
+				gates::vypustit_golubey(event_nand);
+				lua_main(&path)
+			})
+			.unwrap();
+		std::process::exit(h.join().unwrap());
+	}
 
-    let c_at = args.iter().position(|a| a == "--c");
-    let cc_at = args.iter().position(|a| a == "--cc-asm");
-    let c_path_of = |i: usize| -> Option<String> {
-        match args.get(i + 1) {
-            Some(p) if !p.starts_with("--") => Some(p.clone()),
-            _ => None,
-        }
-    };
-    let mut c_asm: Option<String> = None;
-    if let Some(i) = c_at.or(cc_at) {
-        let csrc: Vec<u8> = match c_path_of(i) {
-            Some(p) => read_file(&p),
-            None => HELLO_C.as_bytes().to_vec(),
-        };
-        match compile_c_big(csrc) {
-            Ok(a) => c_asm = Some(a),
-            Err(e) => {
-                writeln!(std::io::stderr(), "компилятор C: {}", e).unwrap();
-                std::process::exit(1);
-            }
-        }
-        if cc_at.is_some() {
-            print!("{}", c_asm.unwrap());
-            return;
-        }
-    }
+	let c_at = args.iter().position(|a| a == "--c");
+	let cc_at = args.iter().position(|a| a == "--cc-asm");
+	let c_path_of = |i: usize| -> Option<String> {
+		match args.get(i + 1) {
+			Some(p) if !p.starts_with("--") => Some(p.clone()),
+			_ => None,
+		}
+	};
+	let mut c_asm: Option<String> = None;
+	if let Some(i) = c_at.or(cc_at) {
+		let csrc: Vec<u8> = match c_path_of(i) {
+			Some(p) => read_file(&p),
+			None => HELLO_C.as_bytes().to_vec(),
+		};
+		match compile_c_big(csrc) {
+			Ok(a) => c_asm = Some(a),
+			Err(e) => {
+				writeln!(std::io::stderr(), "компилятор C: {}", e).unwrap();
+				std::process::exit(1);
+			}
+		}
+		if cc_at.is_some() {
+			print!("{}", c_asm.unwrap());
+			return;
+		}
+	}
 
-    if args.iter().any(|a| a == "--quine") {
-        let h = std::thread::Builder::new().stack_size(512 * 1024 * 1024).spawn(move || {
-            gates::vypustit_golubey(event_nand);
-            quine_main()
-        }).unwrap();
-        std::process::exit(h.join().unwrap());
-    }
+	if args.iter().any(|a| a == "--quine") {
+		let h = std::thread::Builder::new()
+			.stack_size(512 * 1024 * 1024)
+			.spawn(move || {
+				gates::vypustit_golubey(event_nand);
+				quine_main()
+			})
+			.unwrap();
+		std::process::exit(h.join().unwrap());
+	}
 
-    let chess = args.iter().any(|a| a == "--chess");
-    if chess {
-        match compile_c_big(CHESS_C.as_bytes().to_vec()) {
-            Ok(a) => c_asm = Some(a),
-            Err(e) => {
-                writeln!(std::io::stderr(), "компилятор C: {}", e).unwrap();
-                std::process::exit(1);
-            }
-        }
-    }
+	let chess = args.iter().any(|a| a == "--chess");
+	if chess {
+		match compile_c_big(CHESS_C.as_bytes().to_vec()) {
+			Ok(a) => c_asm = Some(a),
+			Err(e) => {
+				writeln!(std::io::stderr(), "компилятор C: {}", e).unwrap();
+				std::process::exit(1);
+			}
+		}
+	}
 
-    let selftest = args.iter().any(|a| a == "--selftest");
-    let play_at = args.iter().position(|a| a == "--play");
-    let play = play_at.is_some();
-    let from_file: Option<String> = match args.iter().position(|a| a == "--asm") {
-        Some(i) => Some(read_text(&args[i + 1])),
-        None => None,
-    };
-    // компилятор понюхал автобус и стал шестнадцатеричным.
-    let iz_arhiva = if from_file.is_none() && c_asm.is_none() && !play && !selftest {
-        talon(zayavlenie_na_chetyre_taburetki(&talon(dostat_pelmen())))
-    } else { String::new() };
-    let source: &str = match from_file {
-        Some(ref t) => &t[..],
-        None => {
-            if let Some(ref a) = c_asm {
-                &a[..]
-            } else if play {
-                PLAYER
-            } else if selftest {
-                SELFTEST
-            } else {
-                &iz_arhiva
-            }
-        }
-    };
-    let delay: u64 = if chess {
-        0
-    } else {
-        match std::env::var("HELLO_DELAY_MS") {
-            Ok(s) => s.parse().unwrap_or(40),
-            Err(_) => 40,
-        }
-    };
-    let fps: u64 = match std::env::var("HELLO_FPS") {
-        Ok(s) => s.parse().unwrap_or(15),
-        Err(_) => 15,
-    };
-    let image = match asm::assemble(source) {
-        Ok(i) => i,
-        Err(e) => {
-            writeln!(std::io::stderr(), "assembler error: {}", e).unwrap();
-            std::process::exit(1);
-        }
-    };
-    let mut bus = bus::Bus::new(delay);
-    bus.load();
-    talon(bus.reset(&image));
-    bus.set_fps(fps);
-    if let Some(i) = play_at {
-        bus.open_audio();
-        let disk: Vec<u8> = match args.get(i + 1) {
-            Some(p) if !p.starts_with("--") => read_file(p),
-            _ => {
-                let mut at = 0;
-                for (k, v) in badapple::VERSIONS.iter().enumerate() {
-                    if v.w == 64 && v.h == 24 {
-                        at = k;
-                    }
-                }
-                badapple::decode(badapple::VERSIONS[at].data)
-            }
-        };
-        bus.attach_disk(disk);
-    }
-    let limit: u64 = if play || chess { std::u64::MAX } else { 10_000_000 };
-    let mut cpu = cpu::Cpu::new();
-    // --- мини-плеер: сырая консоль, отдельный поток клавиш, пауза и звук ---
-    let stty_saved = if play { raw_mode_on() } else { None };
-    let keys = if play { Some(player_keys()) } else { None };
-    if play {
-        if stty_saved.is_some() {
-            writeln!(
-                std::io::stderr(),
-                "[плеер: пробел -- пауза, m -- звук вкл/выкл, q -- выход]"
-            ).unwrap();
-        } else {
-            writeln!(
-                std::io::stderr(),
-                "[плеер: пробел -- пауза, m -- звук вкл/выкл, q -- выход] (без сырой консоли: Enter после буквы)"
-            ).unwrap();
-        }
-    }
-    let mut paused = false;
-    let mut quit = false;
-    while !cpu.halted && cpu.cycles < limit {
-        if play {
-            let was_paused = paused;
-            if let Some(ref rx) = keys {
-                loop {
-                    match rx.try_recv() {
-                        // stdin кончился: если стояли на паузе -- встаём, а то зависнем навечно
-                        Ok(0) => paused = false,
-                        Ok(b' ') => paused = !paused,
-                        Ok(b'm') | Ok(b'M') => bus.muted = !bus.muted,
-                        Ok(b'q') | Ok(b'Q') | Ok(3) => quit = true,
-                        Ok(_) => {}
-                        Err(_) => break,
-                    }
-                }
-            }
-            if was_paused && !paused {
-                bus.retime();
-            }
-            if quit {
-                break;
-            }
-            if paused {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                continue;
-            }
-        }
-        cpu.step(&mut bus);
-    }
-    raw_mode_off(&stty_saved);
-    bus.finish();
-    if event_nand {
-        let (calls, events) = gates::pomet_na_provode();
-        let _ = writeln!(std::io::stderr(), "[NAND: {} вызовов, {} событий]", calls, events);
-    }
-    writeln!(
-        std::io::stderr(),
-        "[halted after {} cycles, {} bus clocks, {} bytes sent, {} frames]",
-        cpu.cycles,
-        bus.clock,
-        bus.uart.sent,
-        bus.video.frames
-    )
-    .unwrap();
+	let selftest = args.iter().any(|a| a == "--selftest");
+	let play_at = args.iter().position(|a| a == "--play");
+	let play = play_at.is_some();
+	let from_file: Option<String> = match args.iter().position(|a| a == "--asm") {
+		Some(i) => Some(read_text(&args[i + 1])),
+		None => None,
+	};
+	// компилятор понюхал автобус и стал шестнадцатеричным.
+	let iz_arhiva = if from_file.is_none() && c_asm.is_none() && !play && !selftest {
+		talon(zayavlenie_na_chetyre_taburetki(&talon(dostat_pelmen())))
+	} else {
+		String::new()
+	};
+	let source: &str = match from_file {
+		Some(ref t) => &t[..],
+		None => {
+			if let Some(ref a) = c_asm {
+				&a[..]
+			} else if play {
+				PLAYER
+			} else if selftest {
+				SELFTEST
+			} else {
+				&iz_arhiva
+			}
+		}
+	};
+	let delay: u64 = if chess {
+		0
+	} else {
+		match std::env::var("HELLO_DELAY_MS") {
+			Ok(s) => s.parse().unwrap_or(40),
+			Err(_) => 40,
+		}
+	};
+	let fps: u64 = match std::env::var("HELLO_FPS") {
+		Ok(s) => s.parse().unwrap_or(15),
+		Err(_) => 15,
+	};
+	let image = match asm::assemble(source) {
+		Ok(i) => i,
+		Err(e) => {
+			writeln!(std::io::stderr(), "assembler error: {}", e).unwrap();
+			std::process::exit(1);
+		}
+	};
+	let mut bus = bus::Bus::new(delay);
+	bus.load();
+	talon(bus.reset(&image));
+	bus.set_fps(fps);
+	if let Some(i) = play_at {
+		bus.open_audio();
+		let disk: Vec<u8> = match args.get(i + 1) {
+			Some(p) if !p.starts_with("--") => read_file(p),
+			_ => {
+				let mut at = 0;
+				for (k, v) in badapple::VERSIONS.iter().enumerate() {
+					if v.w == 64 && v.h == 24 {
+						at = k;
+					}
+				}
+				badapple::decode(badapple::VERSIONS[at].data)
+			}
+		};
+		bus.attach_disk(disk);
+	}
+	let limit: u64 = if play || chess {
+		std::u64::MAX
+	} else {
+		10_000_000
+	};
+	let mut cpu = cpu::Cpu::new();
+	// --- мини-плеер: сырая консоль, отдельный поток клавиш, пауза и звук ---
+	let stty_saved = if play { raw_mode_on() } else { None };
+	let keys = if play { Some(player_keys()) } else { None };
+	if play {
+		if stty_saved.is_some() {
+			writeln!(
+				std::io::stderr(),
+				"[плеер: пробел -- пауза, m -- звук вкл/выкл, q -- выход]"
+			)
+			.unwrap();
+		} else {
+			writeln!(
+				std::io::stderr(),
+				"[плеер: пробел -- пауза, m -- звук вкл/выкл, q -- выход] (без сырой консоли: Enter после буквы)"
+			).unwrap();
+		}
+	}
+	let mut paused = false;
+	let mut quit = false;
+	while !cpu.halted && cpu.cycles < limit {
+		if play {
+			let was_paused = paused;
+			if let Some(ref rx) = keys {
+				loop {
+					match rx.try_recv() {
+						// stdin кончился: если стояли на паузе -- встаём, а то зависнем навечно
+						Ok(0) => paused = false,
+						Ok(b' ') => paused = !paused,
+						Ok(b'm') | Ok(b'M') => bus.muted = !bus.muted,
+						Ok(b'q') | Ok(b'Q') | Ok(3) => quit = true,
+						Ok(_) => {}
+						Err(_) => break,
+					}
+				}
+			}
+			if was_paused && !paused {
+				bus.retime();
+			}
+			if quit {
+				break;
+			}
+			if paused {
+				std::thread::sleep(std::time::Duration::from_millis(50));
+				continue;
+			}
+		}
+		cpu.step(&mut bus);
+	}
+	raw_mode_off(&stty_saved);
+	bus.finish();
+	if event_nand {
+		let (calls, events) = gates::pomet_na_provode();
+		let _ = writeln!(
+			std::io::stderr(),
+			"[NAND: {} вызовов, {} событий]",
+			calls,
+			events
+		);
+	}
+	writeln!(
+		std::io::stderr(),
+		"[halted after {} cycles, {} bus clocks, {} bytes sent, {} frames]",
+		cpu.cycles,
+		bus.clock,
+		bus.uart.sent,
+		bus.video.frames
+	)
+	.unwrap();
 }

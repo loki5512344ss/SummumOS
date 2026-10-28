@@ -19,56 +19,140 @@
 // tools/mkbadapple.rs из mp4 и звука; руками править нужно!.
 // Внутри каждого размера -- BAV3, закодированный base64.
 // ===========================================================================
-use ::data::video::Version;
+use data::video::Version;
 
 pub const NAME: &'static str = "Bad Apple";
 
 /// Таблица версий, от маленькой к большой. Строки индекса -- ниже, в шапке.
 pub const VERSIONS: &'static [Version] = &[
-    Version { w: 24, h: 9, fps: 30, frames: 9581, data: BAV_24X9 },
-    Version { w: 32, h: 12, fps: 30, frames: 9581, data: BAV_32X12 },
-    Version { w: 40, h: 15, fps: 30, frames: 9581, data: BAV_40X15 },
-    Version { w: 48, h: 18, fps: 30, frames: 9581, data: BAV_48X18 },
-    Version { w: 56, h: 21, fps: 30, frames: 9581, data: BAV_56X21 },
-    Version { w: 64, h: 24, fps: 30, frames: 9581, data: BAV_64X24 },
-    Version { w: 72, h: 27, fps: 30, frames: 9581, data: BAV_72X27 },
-    Version { w: 80, h: 30, fps: 30, frames: 9581, data: BAV_80X30 },
-    Version { w: 88, h: 33, fps: 30, frames: 9581, data: BAV_88X33 },
-    Version { w: 96, h: 36, fps: 30, frames: 9581, data: BAV_96X36 },
-    Version { w: 112, h: 42, fps: 30, frames: 9581, data: BAV_112X42 },
-    Version { w: 128, h: 48, fps: 30, frames: 9581, data: BAV_128X48 },
-    Version { w: 160, h: 60, fps: 30, frames: 9581, data: BAV_160X60 },
-    Version { w: 192, h: 72, fps: 30, frames: 9581, data: BAV_192X72 },
+	Version {
+		w: 24,
+		h: 9,
+		fps: 30,
+		frames: 9581,
+		data: BAV_24X9,
+	},
+	Version {
+		w: 32,
+		h: 12,
+		fps: 30,
+		frames: 9581,
+		data: BAV_32X12,
+	},
+	Version {
+		w: 40,
+		h: 15,
+		fps: 30,
+		frames: 9581,
+		data: BAV_40X15,
+	},
+	Version {
+		w: 48,
+		h: 18,
+		fps: 30,
+		frames: 9581,
+		data: BAV_48X18,
+	},
+	Version {
+		w: 56,
+		h: 21,
+		fps: 30,
+		frames: 9581,
+		data: BAV_56X21,
+	},
+	Version {
+		w: 64,
+		h: 24,
+		fps: 30,
+		frames: 9581,
+		data: BAV_64X24,
+	},
+	Version {
+		w: 72,
+		h: 27,
+		fps: 30,
+		frames: 9581,
+		data: BAV_72X27,
+	},
+	Version {
+		w: 80,
+		h: 30,
+		fps: 30,
+		frames: 9581,
+		data: BAV_80X30,
+	},
+	Version {
+		w: 88,
+		h: 33,
+		fps: 30,
+		frames: 9581,
+		data: BAV_88X33,
+	},
+	Version {
+		w: 96,
+		h: 36,
+		fps: 30,
+		frames: 9581,
+		data: BAV_96X36,
+	},
+	Version {
+		w: 112,
+		h: 42,
+		fps: 30,
+		frames: 9581,
+		data: BAV_112X42,
+	},
+	Version {
+		w: 128,
+		h: 48,
+		fps: 30,
+		frames: 9581,
+		data: BAV_128X48,
+	},
+	Version {
+		w: 160,
+		h: 60,
+		fps: 30,
+		frames: 9581,
+		data: BAV_160X60,
+	},
+	Version {
+		w: 192,
+		h: 72,
+		fps: 30,
+		frames: 9581,
+		data: BAV_192X72,
+	},
 ];
 
 /// base64 -> байты. Переводы строк и мусор пропускаем.
 pub fn decode(s: &str) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::new();
-    let mut buf: u32 = 0;
-    let mut bits: u32 = 0;
-    for b in s.bytes() {
-        let v = match b {
-            b'A'..=b'Z' => b - b'A',
-            b'a'..=b'z' => b - b'a' + 26,
-            b'0'..=b'9' => b - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => continue,
-        };
-        buf = (buf << 6) | v as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buf >> bits) as u8);
-            buf &= (1u32 << bits) - 1;
-        }
-    }
-    out
+	let mut out: Vec<u8> = Vec::new();
+	let mut buf: u32 = 0;
+	let mut bits: u32 = 0;
+	for b in s.bytes() {
+		let v = match b {
+			b'A'..=b'Z' => b - b'A',
+			b'a'..=b'z' => b - b'a' + 26,
+			b'0'..=b'9' => b - b'0' + 52,
+			b'+' => 62,
+			b'/' => 63,
+			_ => continue,
+		};
+		buf = (buf << 6) | v as u32;
+		bits += 6;
+		if bits >= 8 {
+			bits -= 8;
+			out.push((buf >> bits) as u8);
+			buf &= (1u32 << bits) - 1;
+		}
+	}
+	out
 }
 
 /// Самый большой размер, который влезает в сетку.
 pub fn best_for(w: usize, h: usize) -> usize {
-    ::data::video::best_for(VERSIONS, w, h)
+	::data::video::best_for(VERSIONS, w, h)
 }
 
 pub const BAV_24X9: &'static str = "
@@ -841847,4 +841931,3 @@ oSACLgI6Ai0BPQIrBCoEIwIlDECjIAIuAjoDLQE9CisBKgEjAyUGQKQgBC4DOgwtAj0BKwIqAiMCJagg
 /yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g
 /yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8gNiAAAAAAAAAAAAAA
 ";
-

@@ -9,16 +9,22 @@ mod pasport_kartoshki;
 mod vedro_s_dyrkoy;
 
 fn main() {
-    let args: Vec<String> = ::std::env::args().collect();
-    if args.len() != 3 && !(args.len() == 4 && args[1] == "--decode") {
-        eprintln!("nasos [--decode] вход выход");
-        ::std::process::exit(2);
-    }
-    let decode = args.len() == 4;
-    let at = if decode { 2 } else { 1 };
-    match vedro_s_dyrkoy::pereselit_tapok(::std::path::Path::new(&args[at]),
-                               ::std::path::Path::new(&args[at + 1]), decode) {
-        Ok(()) => {}
-        Err(e) => { eprintln!("раздуватель: {}", e); ::std::process::exit(2); }
-    }
+	let args: Vec<String> = ::std::env::args().collect();
+	if args.len() != 3 && !(args.len() == 4 && args[1] == "--decode") {
+		eprintln!("nasos [--decode] вход выход");
+		::std::process::exit(2);
+	}
+	let decode = args.len() == 4;
+	let at = if decode { 2 } else { 1 };
+	match vedro_s_dyrkoy::pereselit_tapok(
+		::std::path::Path::new(&args[at]),
+		::std::path::Path::new(&args[at + 1]),
+		decode,
+	) {
+		Ok(()) => {}
+		Err(e) => {
+			eprintln!("раздуватель: {}", e);
+			::std::process::exit(2);
+		}
+	}
 }

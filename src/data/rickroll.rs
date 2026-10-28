@@ -10,47 +10,77 @@
 // tools/mkbadapple.rs из mp4 и звука; руками править нужно!.
 // Внутри каждого размера -- BAV2, закодированный base64.
 // ===========================================================================
-use ::data::video::Version;
+use data::video::Version;
 
 pub const NAME: &'static str = "Rickroll";
 
 /// Таблица версий, от маленькой к большой. Строки индекса -- ниже, в шапке.
 pub const VERSIONS: &'static [Version] = &[
-    Version { w: 64, h: 18, fps: 15, frames: 3196, data: BAV_64X18 },
-    Version { w: 96, h: 27, fps: 15, frames: 3196, data: BAV_96X27 },
-    Version { w: 128, h: 36, fps: 15, frames: 3196, data: BAV_128X36 },
-    Version { w: 160, h: 45, fps: 15, frames: 3196, data: BAV_160X45 },
-    Version { w: 192, h: 54, fps: 15, frames: 3196, data: BAV_192X54 },
+	Version {
+		w: 64,
+		h: 18,
+		fps: 15,
+		frames: 3196,
+		data: BAV_64X18,
+	},
+	Version {
+		w: 96,
+		h: 27,
+		fps: 15,
+		frames: 3196,
+		data: BAV_96X27,
+	},
+	Version {
+		w: 128,
+		h: 36,
+		fps: 15,
+		frames: 3196,
+		data: BAV_128X36,
+	},
+	Version {
+		w: 160,
+		h: 45,
+		fps: 15,
+		frames: 3196,
+		data: BAV_160X45,
+	},
+	Version {
+		w: 192,
+		h: 54,
+		fps: 15,
+		frames: 3196,
+		data: BAV_192X54,
+	},
 ];
 
 /// base64 -> байты. Переводы строк и мусор пропускаем.
 pub fn decode(s: &str) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::new();
-    let mut buf: u32 = 0;
-    let mut bits: u32 = 0;
-    for b in s.bytes() {
-        let v = match b {
-            b'A'..=b'Z' => b - b'A',
-            b'a'..=b'z' => b - b'a' + 26,
-            b'0'..=b'9' => b - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => continue,
-        };
-        buf = (buf << 6) | v as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buf >> bits) as u8);
-            buf &= (1u32 << bits) - 1;
-        }
-    }
-    out
+	let mut out: Vec<u8> = Vec::new();
+	let mut buf: u32 = 0;
+	let mut bits: u32 = 0;
+	for b in s.bytes() {
+		let v = match b {
+			b'A'..=b'Z' => b - b'A',
+			b'a'..=b'z' => b - b'a' + 26,
+			b'0'..=b'9' => b - b'0' + 52,
+			b'+' => 62,
+			b'/' => 63,
+			_ => continue,
+		};
+		buf = (buf << 6) | v as u32;
+		bits += 6;
+		if bits >= 8 {
+			bits -= 8;
+			out.push((buf >> bits) as u8);
+			buf &= (1u32 << bits) - 1;
+		}
+	}
+	out
 }
 
 /// Самый большой размер, который влезает в сетку.
 pub fn best_for(w: usize, h: usize) -> usize {
-    ::data::video::best_for(VERSIONS, w, h)
+	::data::video::best_for(VERSIONS, w, h)
 }
 
 pub const BAV_64X18: &'static str = "
@@ -366648,4 +366678,3 @@ BgXKCQUD/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g
 /yD/IP8g/yD/IP8g/yD/IP8g/yD/IKgggQMF3gQEEAcEA/8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g
 /yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8g/yD/IP8gqCBDAwVZBAXfBAQD
 ";
-

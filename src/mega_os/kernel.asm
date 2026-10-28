@@ -667,6 +667,8 @@ put_iskat:
 ldi r4, 0x8190
 st [r4], r1
 st [r4+2], r2
+ldi r4, 0x8180
+add r4, r4, r6
 put_napolni:
 cmpi r6, 8
 jge put_poisk
@@ -1086,6 +1088,10 @@ ldi r0, 1
 ldi r1, mega_banner
 ldi r2, 8
 int 2
+; сундук нашёлся при старте: демо не повторяем, просто проверяем мебель
+ldi r0, 0x8140
+ld r1, [r0]
+jnz r1, vspomnil
 ; Стек несёт две котлеты: call и локальное слово обязаны доехать к ребёнку.
 call fork_demo
 jz r0, fork_rebenok
@@ -1365,6 +1371,20 @@ ldi r0, 0x810e
 ldi r1, 0xdead
 st [r0], r1
 hlt
+vspomnil:
+ldi r0, 16
+ldi r1, put_text
+ldi r2, 10
+int 2
+cmpi r0, 3
+jne demo_fail
+ldi r0, 1
+ldi r1, pomnu_text
+ldi r2, 11
+int 2
+jmp vse
+pomnu_text:
+.str "i remember\n"
 mega_banner:
 .str "MEGA OS\n"
 b_text:
