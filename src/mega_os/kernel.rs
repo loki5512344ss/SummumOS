@@ -175,14 +175,14 @@ pub fn proverit_megu(bus: &mut Bus) -> Result<MegaOtchet, String> {
 		|| report.yields == 0
 		|| report.preemptions < 3
 		|| report.file_operations != 5
-		|| report.rejected != 5
+		|| report.rejected != 6
 		|| report.execs != 1
-		|| report.dirs != 1
+		|| report.dirs != 2
 		|| report.opens != 1
-		|| report.creates != 1
+		|| report.creates != 2
 		|| report.readdirs < 1
 		|| report.saves != 1
-		|| report.opens_put != 1
+		|| report.opens_put != 2
 		|| report.vosstanovleno != 0
 	{
 		return Err(format!("Мега-ОС: неполный гостевой сценарий: {:?}", report));
@@ -204,8 +204,19 @@ pub fn proverit_megu(bus: &mut Bus) -> Result<MegaOtchet, String> {
 	{
 		return Err("Мега-ОС: каталог games развалился в RAM-ФС".into());
 	}
-	if word(bus, slot(4)) != 0 {
-		return Err("Мега-ОС: уволенный слот 4 всё ещё числится на работе".into());
+	// четвёртый слот -- каталог sub внутри games, пятый -- файл deep внутри sub.
+	if word(bus, slot(4)) != 1
+		|| bus.peek(slozhit(slot(4), 12)) != 2
+		|| bus.peek(slozhit(slot(4), 13)) != 1
+		|| !imya_v_slote(bus, 4, b"sub")
+		|| word(bus, slot(5)) != 1
+		|| bus.peek(slozhit(slot(5), 12)) != 4
+		|| !imya_v_slote(bus, 5, b"deep")
+	{
+		return Err("Мега-ОС: подкаталог sub или файл deep развалились".into());
+	}
+	if word(bus, slot(6)) != 0 {
+		return Err("Мега-ОС: уволенный слот 6 всё ещё числится на работе".into());
 	}
 	// файл в ФС общий, а буфер 0xa000 читатель держит в своей квартире (слот 1).
 	let byvshaya = bus.peek(::bus::SPACE);
@@ -304,9 +315,9 @@ mod tests {
 		assert_eq!(report.execs, 1);
 		assert_eq!(report.exited, 5);
 		assert_eq!(report.forks, 1);
-		assert_eq!(report.dirs, 1);
+		assert_eq!(report.dirs, 2);
 		assert_eq!(report.opens, 1);
-		assert_eq!(report.creates, 1);
+		assert_eq!(report.creates, 2);
 		assert!(report.readdirs >= 1);
 		assert!(report.dispatches[0] >= 2);
 		assert!(report.dispatches[1] >= 2);

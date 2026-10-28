@@ -97,9 +97,9 @@ mod tests {
 		assert_eq!(otchet.execs, 1);
 		assert_eq!(otchet.exited, 5);
 		assert_eq!(otchet.forks, 1);
-		assert_eq!(otchet.dirs, 1);
+		assert_eq!(otchet.dirs, 2);
 		assert_eq!(otchet.opens, 1);
-		assert_eq!(otchet.creates, 1);
+		assert_eq!(otchet.creates, 2);
 		assert!(otchet.readdirs >= 1);
 		for pid in 0..4u16 {
 			assert_eq!(

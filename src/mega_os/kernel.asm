@@ -1223,6 +1223,34 @@ rebenok_umer:
 ldi r0, 0x8068
 ld r1, [r0]
 jnz r1, demo_fail
+; --- каталог sub внутри games, а в нём файл deep: путь в три этажа ---
+ldi r0, 9
+ldi r1, 2
+ldi r2, imya_sub
+ldi r3, 3
+int 2
+cmpi r0, 4
+jne demo_fail
+ldi r1, 4
+ldi r0, 12
+ldi r2, imya_deep
+ldi r3, 4
+int 2
+cmpi r0, 5
+jne demo_fail
+ldi r0, 16
+ldi r1, glub_text
+ldi r2, 14
+int 2
+cmpi r0, 5
+jne demo_fail
+; --- а такого пути нет, пусть честно скажет 65533 ---
+ldi r0, 16
+ldi r1, netu_text
+ldi r2, 14
+int 2
+cmpi r0, 65533
+jne demo_fail
 ; --- сундук: слить ФС на диск, чтобы следующий запуск её вспомнил ---
 ldi r0, 14
 int 2
@@ -1405,5 +1433,13 @@ fork_child_text:
 .str "fork child\n"
 put_text:
 .str "games/doom"
+imya_sub:
+.str "sub"
+imya_deep:
+.str "deep"
+glub_text:
+.str "games/sub/deep"
+netu_text:
+.str "games/sub/doom"
 sunduk_magic:
 .byte 83, 85, 78, 68, 85, 75, 51, 53
