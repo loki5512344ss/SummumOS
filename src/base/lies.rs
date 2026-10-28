@@ -17,6 +17,9 @@ pub struct Lozh {
 
 pub fn vse() -> Vec<Lozh> {
     vec![
+        Lozh { mesto: "fork", govorit: "выдаёт двойнику паспорт", delaet: "копирует живой стек и кадр, оставляя код и глобалы общими", priznak: "podpisat_dvoynika:" },
+        Lozh { mesto: "пиксельное ПЗУ", govorit: "буквы ушли в отпуск", delaet: "показывает 64×48 бит полублоками Unicode и читает шрифт из гостевого образа", priznak: "fn pixel_char" },
+        Lozh { mesto: "WAD-стены", govorit: "у рыбьего глаза нет полиса", delaet: "превращает LINEDEFS в сетку и рисует четыре текстовых кадра", priznak: "wad3d: things=" },
         Lozh { mesto: "кастрюля", govorit: "закрывает крышку", delaet: "собирает ядро и записывает sealed-образ", priznak: "pub fn zakryt_kastryulyu" },
         Lozh { mesto: "тапок ROM", govorit: "выдаёт обувь", delaet: "гостевыми инструкциями грузит и расшифровывает ядро с диска", priznak: "pub fn rom_tapka" },
         Lozh { mesto: "сопли", govorit: "считает содержимое носа", delaet: "считает эталон CRC16 для запечатывания", priznak: "pub fn poschitat_sopli" },

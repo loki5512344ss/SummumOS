@@ -160,14 +160,16 @@ fn main() {
 
     // WAD-парсер: файл лежит на эмулируемом диске и читается побайтно.
     // В RAM его никто не грузит -- 64 КБ не резиновые.
-    if let Some(i) = args.iter().position(|a| a == "--wad-nand") {
+    if let Some(i) = args.iter().position(|a| a == "--wad-nand" || a == "--wad3d-nand") {
+        let walls = args[i] == "--wad3d-nand";
         let path = args[i + 1].clone();
         let wad = read_file(&path);
         if wad.len() > 0xFFFFFF {
             talon(Err::<(), String>(format!("{}: WAD больше 24-битного диска ({} байт)",
                 path, wad.len())));
         }
-        let asm_text = talon(compile_c_big(WAD.as_bytes().to_vec()));
+        let source = if walls { WAD3D } else { WAD };
+        let asm_text = talon(compile_c_big(source.as_bytes().to_vec()));
         let image = talon(asm::assemble(&asm_text));
         let mut bus = bus::Bus::new(0);
         bus.load();
@@ -185,6 +187,21 @@ fn main() {
         } else {
             Err("WAD-парсер не остановился за 20 миллионов тактов".to_string())
         });
+        if walls && cpu.r[0].to_u16() != 0 {
+            talon(Err::<(), String>("WAD-стены: гость отклонил карту".into()));
+        }
+        return;
+    }
+
+    if args.iter().any(|a| a == "--pixel-nand") {
+        let source = format!("{}\n{}", PIXEL, FONT8);
+        let image = talon(asm::assemble(&source));
+        let mut bus = bus::Bus::new(0);
+        bus.load();
+        talon(bus.reset(&image));
+        let mut cpu = cpu::Cpu::new();
+        while !cpu.halted && cpu.cycles < 100_000 { cpu.step(&mut bus); }
+        talon(if cpu.halted { Ok(()) } else { Err("пиксели не вернулись из отпуска".to_string()) });
         return;
     }
 

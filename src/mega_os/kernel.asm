@@ -22,6 +22,14 @@ stb [r0], r2
 addi r0, r0, 1
 cmp r0, r1
 jlt chistka_fs
+; --- сундук прошлого запуска: если на диске лежит наша магия, ФС восстановлена ---
+call fs_load_telo
+cmpi r0, 0
+jne sunduk_pustoy
+ldi r0, 0x8140
+ldi r1, 1
+st [r0], r1
+sunduk_pustoy:
 ldi sp, 45056
 ldi r0, kartoshka
 push r0
@@ -37,6 +45,8 @@ push r0
 push r0
 ldi r0, 32768
 st [r0], sp
+ldi r1, 0xb000
+st [r0+10], r1
 ldi r1, 1
 st [r0+2], r1
 ldi sp, 46080
@@ -54,6 +64,8 @@ push r0
 push r0
 ldi r0, 32800
 st [r0], sp
+ldi r1, 0xb400
+st [r0+10], r1
 ldi r1, 1
 st [r0+2], r1
 ldi sp, 47104
@@ -71,6 +83,8 @@ push r0
 push r0
 ldi r0, 32832
 st [r0], sp
+ldi r1, 0xb800
+st [r0+10], r1
 ldi r1, 1
 st [r0+2], r1
 ; бездельника больше не прописываем в слот 3: слот отдан ребёнку из файла.
@@ -143,7 +157,7 @@ ld r1, [r0]
 addi r1, r1, 1
 st [r0], r1
 ldi r2, 0x8000
-ldi r3, 3
+ldi r3, 4
 razbudit:
 ld r0, [r2+2]
 cmpi r0, 2
@@ -185,6 +199,14 @@ cmpi r0, 11
 je chtat_katalog
 cmpi r0, 12
 je sozdat
+cmpi r0, 13
+je podpisat_dvoynika
+cmpi r0, 14
+je fs_save
+cmpi r0, 15
+je fs_load
+cmpi r0, 16
+je otkryt_put
 jmp oshibka
 pechat:
 ld r1, [sp+10]
@@ -392,6 +414,13 @@ jmp exec_kopiya
 exec_kadr:
 pop r2
 mov r6, sp
+; --- ребёнку сначала выделяют квартиру: выместили мебель, переехали, хост
+; скопировал память родителя, и кадр строится уже в квартире ребёнка ---
+ldi r4, 0xff27
+ldi r5, 0x80
+or r5, r5, r1
+stb [r4], r5
+stb [r4], r1
 mov sp, r3
 push r2
 ldi r0, 8
@@ -406,6 +435,11 @@ push r0
 push r0
 mov r5, sp
 mov sp, r6
+; --- обратно в квартиру родителя: ребёнок уедет в свою, когда проснётся ---
+ldi r4, 0xff27
+ldi r0, 0x8100
+ld r0, [r0]
+stb [r4], r0
 shl r6, r1, 5
 addi r6, r6, 0x8000
 st [r6], r5
@@ -415,6 +449,7 @@ ldi r0, 0
 st [r6+4], r0
 st [r6+6], r0
 st [r6+8], r0
+st [r6+10], r3
 ldi r0, 0x8124
 ld r2, [r0]
 addi r2, r2, 1
@@ -434,6 +469,266 @@ ld r1, [r0]
 addi r1, r1, 1
 st [r0], r1
 ldi r0, 65535
+jmp fs_error
+; --- INT 2, номер 13: двойник получил паспорт и собственную квартиру памяти.
+; Копируем живой стек вместе с r6..r0, флагами и PC. Чертёж №47 и №51.
+podpisat_dvoynika:
+ld r3, [r2+10]
+mov r2, sp
+cmp r3, r2
+jlt fork_otkaz
+sub r5, r3, r2
+cmpi r5, 18
+jlt fork_otkaz
+cmpi r5, 1025
+jge fork_otkaz
+ldi r0, 1
+and r0, r2, r0
+jnz r0, fork_otkaz
+ldi r1, 0
+ldi r6, 0x8000
+fork_poisk:
+ld r0, [r6+2]
+jz r0, fork_kopiya_start
+addi r1, r1, 1
+addi r6, r6, 32
+cmpi r1, 4
+jlt fork_poisk
+jmp fork_otkaz
+fork_kopiya_start:
+shl r4, r1, 10
+addi r4, r4, 0xb000
+st [r6+10], r4
+sub r4, r4, r5
+st [r6], r4
+fork_kopiya:
+ldb r0, [r2]
+stb [r4], r0
+addi r2, r2, 1
+addi r4, r4, 1
+addi r5, r5, -1
+jnz r5, fork_kopiya
+ld r4, [r6]
+ldi r0, 0
+st [r4+12], r0
+st [r6+4], r0
+st [r6+6], r0
+st [r6+8], r0
+ldi r0, 1
+st [r6+2], r0
+ldi r2, 0x8130
+ld r0, [r2]
+addi r0, r0, 1
+st [r2], r0
+; --- двойник получает собственную квартиру: выметели старую мебель, переехали,
+; хост скопировал нашу память целиком, и двойник живёт отдельно ---
+ldi r2, 0xff27
+ldb r3, [r2]
+cmp r1, r3
+je fork_kvartira_net
+ldi r0, 0x80
+or r0, r0, r1
+stb [r2], r0
+stb [r2], r1
+fork_kvartira_net:
+stb [r2], r3
+; Ноль оставлен ребёнку. PID fork -- номер слота плюс один.
+addi r0, r1, 1
+jmp vernut
+fork_otkaz:
+ldi r2, 0x8132
+ld r0, [r2]
+addi r0, r0, 1
+st [r2], r0
+ldi r0, 65535
+jmp vernut
+; --- INT 2, номер 14: сундук. ФС целиком уезжает на диск по адресу 0x8000,
+; впереди восемь байт магии, чтобы следующий запуск её узнал. Чертёж №50.
+fs_save:
+ldi r4, 0xff30
+ldi r1, 0
+stb [r4], r1
+ldi r1, 0x80
+stb [r4+1], r1
+ldi r1, 0
+stb [r4+2], r1
+ldi r3, sunduk_magic
+ldi r5, 8
+fs_save_magic:
+ldb r6, [r3]
+stb [r4+3], r6
+addi r3, r3, 1
+addi r5, r5, -1
+jnz r5, fs_save_magic
+ldi r3, 0x9000
+ldi r5, 0x880
+fs_save_kop:
+ldb r6, [r3]
+stb [r4+3], r6
+addi r3, r3, 1
+addi r5, r5, -1
+jnz r5, fs_save_kop
+ldi r2, 0x8136
+ld r1, [r2]
+addi r1, r1, 1
+st [r2], r1
+ldi r0, 0
+jmp vernut
+; --- INT 2, номер 15: сундук открывается обратно. Тело общее с загрузкой
+; при старте: fs_load_telo вернёт 0, если магия на диске жива.
+fs_load:
+call fs_load_telo
+cmpi r0, 0
+jne fs_load_net
+ldi r2, 0x813a
+ld r1, [r2]
+addi r1, r1, 1
+st [r2], r1
+ldi r0, 0
+jmp vernut
+fs_load_net:
+ldi r0, 65535
+jmp vernut
+; --- читает сундук с диска в RAM-ФС. r0 = 0 -- сундук открыт, 65535 -- пусто.
+fs_load_telo:
+ldi r4, 0xff30
+ldi r1, 0
+stb [r4], r1
+ldi r1, 0x80
+stb [r4+1], r1
+ldi r1, 0
+stb [r4+2], r1
+ldi r3, sunduk_magic
+ldi r5, 8
+sunduk_sverka:
+ldb r1, [r4+3]
+ldb r6, [r3]
+cmp r1, r6
+jne sunduk_pust
+addi r3, r3, 1
+addi r5, r5, -1
+jnz r5, sunduk_sverka
+ldi r3, 0x9000
+ldi r5, 0x880
+sunduk_kop:
+ldb r6, [r4+3]
+stb [r3], r6
+addi r3, r3, 1
+addi r5, r5, -1
+jnz r5, sunduk_kop
+ldi r0, 0
+ret
+sunduk_pust:
+ldi r0, 65535
+ret
+; --- INT 2, номер 16: открыть файл по пути через каталоги, "games/doom".
+; Компоненты пути разбираются по слэшу и ищутся по цепочке родителей.
+; Остаток пути и номер слота ждут в 0x8190..0x8196, пока ищется компонента.
+otkryt_put:
+ld r1, [sp+10]
+ld r2, [sp+8]
+cmpi r2, 1
+jlt oshibka
+cmpi r2, 33
+jge oshibka
+cmpi r1, 0x2000
+jlt oshibka
+add r0, r1, r2
+cmp r0, r1
+jlt oshibka
+cmpi r0, 0xf001
+jge oshibka
+ldi r3, 0
+put_cikl:
+ldi r4, 0x8190
+st [r4], r1
+st [r4+2], r2
+ldi r4, 0x8180
+ldi r6, 0
+put_sbor:
+jz r2, put_sobrano
+ldb r0, [r1]
+cmpi r0, 47
+je put_sobrano
+stb [r4], r0
+addi r4, r4, 1
+addi r1, r1, 1
+addi r2, r2, -1
+addi r6, r6, 1
+jmp put_sbor
+put_sobrano:
+jz r2, put_iskat
+ldb r0, [r1]
+cmpi r0, 47
+jne put_iskat
+addi r1, r1, 1
+addi r2, r2, -1
+put_iskat:
+ldi r4, 0x8190
+st [r4], r1
+st [r4+2], r2
+put_napolni:
+cmpi r6, 8
+jge put_poisk
+ldi r0, 0
+stb [r4], r0
+addi r4, r4, 1
+addi r6, r6, 1
+jmp put_napolni
+put_poisk:
+ldi r5, 0x9000
+ldi r0, 1
+ldi r4, 0x8194
+st [r4], r0
+put_slot:
+ld r1, [r5]
+jz r1, put_dalshe
+ldb r1, [r5+12]
+cmp r1, r3
+jne put_dalshe
+addi r1, r5, 4
+ldi r4, 0x8180
+ldi r6, 8
+put_bukva:
+ldb r2, [r1]
+ldb r0, [r4]
+cmp r2, r0
+jne put_dalshe
+addi r1, r1, 1
+addi r4, r4, 1
+addi r6, r6, -1
+jnz r6, put_bukva
+; имя нашлось. последний компонент -- победа, промежуточный -- спуск.
+ldi r4, 0x8192
+ld r2, [r4]
+jz r2, put_nashel
+ldb r1, [r5+13]
+cmpi r1, 1
+jne put_puta
+ldi r4, 0x8194
+ld r3, [r4]
+ldi r4, 0x8190
+ld r1, [r4]
+ld r2, [r4+2]
+jmp put_cikl
+put_nashel:
+ldi r4, 0x8194
+ld r0, [r4]
+ldi r4, 0x813c
+ld r1, [r4]
+addi r1, r1, 1
+st [r4], r1
+jmp vernut
+put_dalshe:
+ldi r4, 0x8194
+ld r0, [r4]
+addi r0, r0, 1
+st [r4], r0
+addi r5, r5, 272
+cmpi r0, 9
+jlt put_slot
+put_puta:
+ldi r0, 65533
 jmp fs_error
 ; --- INT 2, номера 9..12: имена в RAM-ФС. каталог -- это слот, который сам
 ; себя считает папкой. родитель -- просто байт, никаких деревьев не завезли ---
@@ -735,8 +1030,9 @@ je nashli
 addi r3, r3, -1
 jnz r3, iskat
 ; все спят, а бездельник всё равно не спит. сажаем его на табуретку.
-ldi r1, 3
-ldi r2, 0x8060
+; Бездельник теперь пятый: у отдела сна отдельная приёмная.
+ldi r1, 4
+ldi r2, 0x8080
 ldi r6, 0x8138
 ld r6, [r6]
 st [r2], r6
@@ -750,6 +1046,17 @@ addi r5, r5, 1
 st [r4], r5
 bez_smeny:
 st [r0], r1
+; --- у процесса своя квартира памяти, номер равен его слоту. бездельник и
+; все, кто не проснулся, сидят в квартире ноль, на общем этаже ---
+ldi r4, 0xff27
+cmpi r1, 4
+je kvartira_nol
+stb [r4], r1
+jmp kvartira_gotovo
+kvartira_nol:
+ldi r5, 0
+stb [r4], r5
+kvartira_gotovo:
 ld r3, [r2+6]
 addi r3, r3, 1
 st [r2+6], r3
@@ -779,6 +1086,23 @@ ldi r0, 1
 ldi r1, mega_banner
 ldi r2, 8
 int 2
+; Стек несёт две котлеты: call и локальное слово обязаны доехать к ребёнку.
+call fork_demo
+jz r0, fork_rebenok
+cmpi r0, 4
+jne demo_fail
+ldi r0, 1
+ldi r1, fork_parent_text
+ldi r2, 12
+int 2
+fork_slot_zhdet:
+ldi r0, 0x8062
+ld r1, [r0]
+jz r1, fork_slot_svoboden
+ldi r0, 3
+int 2
+jmp fork_slot_zhdet
+fork_slot_svoboden:
 ldi r0, 5
 ldi r1, 1
 ldi r2, fayl_text
@@ -808,7 +1132,7 @@ ldi r3, 4
 int 2
 cmpi r0, 3
 jne demo_fail
-ldi r1, 0x8130
+ldi r1, 0x8134
 st [r1], r0
 ; --- ребёнок уезжает в файл doom, а дырка 0x4000 остаётся пустой ---
 mov r1, r0
@@ -836,7 +1160,7 @@ int 2
 cmpi r0, 3
 jne demo_fail
 mov r1, r0
-ldi r2, 0x8130
+ldi r2, 0x8134
 ld r2, [r2]
 cmp r1, r2
 jne demo_fail
@@ -893,6 +1217,40 @@ rebenok_umer:
 ldi r0, 0x8068
 ld r1, [r0]
 jnz r1, demo_fail
+; --- сундук: слить ФС на диск, чтобы следующий запуск её вспомнил ---
+ldi r0, 14
+int 2
+cmpi r0, 0
+jne demo_fail
+; --- открыть doom по пути через каталог, как взрослые ---
+ldi r0, 16
+ldi r1, put_text
+ldi r2, 10
+int 2
+cmpi r0, 3
+jne demo_fail
+ldi r0, 4
+ldi r1, 0
+int 2
+jmp demo_fail
+fork_demo:
+ldi r0, 0x1234
+push r0
+ldi r0, 13
+int 2
+cmpi r0, 65535
+je demo_fail
+mov r6, r0
+pop r0
+cmpi r0, 0x1234
+jne demo_fail
+mov r0, r6
+ret
+fork_rebenok:
+ldi r0, 1
+ldi r1, fork_child_text
+ldi r2, 11
+int 2
 ldi r0, 4
 ldi r1, 0
 int 2
@@ -1021,3 +1379,11 @@ imya_doom:
 .str "doom"
 doom_zero:
 .byte 100, 111, 111, 109, 0, 0, 0, 0
+fork_parent_text:
+.str "fork parent\n"
+fork_child_text:
+.str "fork child\n"
+put_text:
+.str "games/doom"
+sunduk_magic:
+.byte 83, 85, 78, 68, 85, 75, 51, 53

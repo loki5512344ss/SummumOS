@@ -53,15 +53,22 @@ pub struct MegaOtchet {
     pub opens: u16,
     pub creates: u16,
     pub readdirs: u16,
+    pub forks: u16,
+    pub fork_rejected: u16,
+    pub saves: u16,
+    pub loads: u16,
+    pub opens_put: u16,
+    pub vosstanovleno: u16,
     pub dispatches: [u16; 4],
 }
 
 impl fmt::Display for MegaOtchet {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Мега-ОС: завершено процессов {}/4; exec={}, отказов exec={}; timer ticks={}, preemptions={}, switches={}, sleep={}, yield={}; RAM FS: операций={}, отклонено={}, каталогов={}, open={}, create={}, readdir={}, dispatches={:?}",
-            self.exited, self.execs, self.exec_rejected, self.ticks, self.preemptions, self.switches,
+        write!(f, "Мега-ОС: завершено процессов {}/5; fork={}, отказов fork={}; exec={}, отказов exec={}; timer ticks={}, preemptions={}, switches={}, sleep={}, yield={}; RAM FS: операций={}, отклонено={}, каталогов={}, open={}, create={}, readdir={}, сундук: сохранений={}, загрузок={}, open по пути={}, восстановлено={}, dispatches={:?}",
+            self.exited, self.forks, self.fork_rejected, self.execs, self.exec_rejected, self.ticks, self.preemptions, self.switches,
             self.sleeps, self.yields, self.file_operations, self.rejected, self.dirs, self.opens,
-            self.creates, self.readdirs, self.dispatches)
+            self.creates, self.readdirs, self.saves, self.loads, self.opens_put,
+            self.vosstanovleno, self.dispatches)
     }
 }
 
@@ -109,11 +116,16 @@ pub fn proverit_megu(bus: &mut Bus) -> Result<MegaOtchet, String> {
         execs: word(bus, 0x8124), exec_rejected: word(bus, 0x8126),
         dirs: word(bus, 0x8128), opens: word(bus, 0x812a),
         creates: word(bus, 0x812c), readdirs: word(bus, 0x812e),
+        forks: word(bus, 0x8130), fork_rejected: word(bus, 0x8132),
+        saves: word(bus, 0x8136), loads: word(bus, 0x813a),
+        opens_put: word(bus, 0x813c), vosstanovleno: word(bus, 0x8140),
         dispatches: [word(bus, 0x8006), word(bus, 0x8026), word(bus, 0x8046), word(bus, 0x8066)],
     };
-    if report.exited != 4 || report.sleeps != 1 || report.yields == 0 || report.preemptions < 3
+    if report.exited != 5 || report.forks != 1 || report.fork_rejected != 0
+        || report.sleeps != 1 || report.yields == 0 || report.preemptions < 3
         || report.file_operations != 5 || report.rejected != 5 || report.execs != 1
-        || report.dirs != 1 || report.opens != 1 || report.creates != 1 || report.readdirs < 1 {
+        || report.dirs != 1 || report.opens != 1 || report.creates != 1 || report.readdirs < 1
+        || report.saves != 1 || report.opens_put != 1 || report.vosstanovleno != 0 {
         return Err(format!("Мега-ОС: неполный гостевой сценарий: {:?}", report));
     }
     for pid in 0..4 {
@@ -133,9 +145,31 @@ pub fn proverit_megu(bus: &mut Bus) -> Result<MegaOtchet, String> {
     if word(bus, slot(4)) != 0 {
         return Err("Мега-ОС: уволенный слот 4 всё ещё числится на работе".into());
     }
+    // файл в ФС общий, а буфер 0xa000 читатель держит в своей квартире (слот 1).
+    let byvshaya = bus.peek(::bus::SPACE);
+    bus.set_space(1);
+    let mut isporchen = false;
     for (i, b) in b"file from RAM\n".iter().enumerate() {
         if bus.peek(slozhit(slozhit(slot(1), 16), i as u16)) != *b || bus.peek(0xa000 + i as u16) != *b {
-            return Err("Мега-ОС: содержимое RAM-файла повреждено".into());
+            isporchen = true;
+            break;
+        }
+    }
+    bus.set_space(byvshaya);
+    if isporchen {
+        return Err("Мега-ОС: содержимое RAM-файла повреждено".into());
+    }
+    // сундук на диске: магия SUNDUK35 и копия ФС байт в байт.
+    let sunduk: Vec<u8> = bus.disk_image().to_vec();
+    if sunduk.len() < 0x8008 + 0x880 {
+        return Err("Мега-ОС: сундук на диске не влез".into());
+    }
+    if &sunduk[0x8000..0x8008] != b"SUNDUK35" {
+        return Err("Мега-ОС: магия сундука на диске не та".into());
+    }
+    for i in 0..0x880usize {
+        if sunduk[0x8008 + i] != bus.peek((0x9000 + i as u16)) {
+            return Err("Мега-ОС: сундук на диске не совпал с RAM-ФС".into());
         }
     }
     // ребёнок должен лежать в doom, в дырке 0x4000 и в буфере readdir.
@@ -155,7 +189,7 @@ pub fn proverit_megu(bus: &mut Bus) -> Result<MegaOtchet, String> {
             return Err("Мега-ОС: readdir не вспомнил имя doom".into());
         }
     }
-    if !sobrano(bus, b"child") {
+    if !sobrano(bus, b"child\n") || !sobrano(bus, b"fork child\n") || !sobrano(bus, b"fork parent\n") {
         return Err("Мега-ОС: ребёнок ничего не сказал".into());
     }
     Ok(report)
@@ -180,9 +214,13 @@ mod tests {
         cpu.pc = Word::from_u16(VOROTA as u16);
         while !cpu.halted && cpu.cycles < POTOLK_KASTRYULI { cpu.step(&mut bus); }
         assert!(cpu.halted, "guest runaway pc={:04x}", cpu.pc.to_u16());
-        let report = proverit_megu(&mut bus).unwrap();
+        let report = match proverit_megu(&mut bus) {
+            Ok(r) => r,
+            Err(e) => panic!("{}\nUART:\n{}", e, String::from_utf8_lossy(&bus.take_captured())),
+        };
         assert_eq!(report.execs, 1);
-        assert_eq!(report.exited, 4);
+        assert_eq!(report.exited, 5);
+        assert_eq!(report.forks, 1);
         assert_eq!(report.dirs, 1);
         assert_eq!(report.opens, 1);
         assert_eq!(report.creates, 1);
@@ -194,6 +232,126 @@ mod tests {
         let output = String::from_utf8(bus.take_captured()).unwrap();
         let mut lines: Vec<_> = output.lines().collect();
         lines.sort();
-        assert_eq!(lines, vec!["MEGA OS", "awake A", "child", "file from RAM", "worker B"]);
+        assert_eq!(lines, vec!["MEGA OS", "awake A", "child", "file from RAM", "fork child", "fork parent", "worker B"]);
+    }
+
+    #[test]
+    fn sunduk_vozvrashaet_fayly_posle_perezagruzki() {
+        // прошлый запуск слил ФС в сундук на диске. новый запуск обязан её
+        // вспомнить ещё до демо: флаг 0x8140 и содержимое файла в слоте 1.
+        let mut source = ".byte 0\n".repeat(VOROTA);
+        source.push_str(&include_str!("kernel.asm")
+            .replace("@REBENOK_LEN@", "24")
+            .replace("kartoshka:\n", "kartoshka:\njmp proverka_sunduka\n"));
+        source.push_str("\nproverka_sunduka:\ncli\nldi r0, 0x8140\nld r1, [r0]\njz r1, sunduka_net\nldi r1, 0x8200\nldi r0, 1\nst [r1], r0\nldi r2, 0x9010\nldb r0, [r2]\ncmpi r0, 102\njne sunduka_net\nldb r0, [r2+1]\ncmpi r0, 105\njne sunduka_net\nldb r0, [r2+2]\ncmpi r0, 108\njne sunduka_net\nldi r1, 0x8202\nldi r0, 1\nst [r1], r0\nsunduka_net:\nhlt\n");
+        let image = ::asm::assemble(&source).unwrap();
+        let rebenok = nadut_rebenka().unwrap();
+        let mut yadro = image[VOROTA..].to_vec();
+        let at = REBENOK - VOROTA;
+        yadro.resize(at, 0);
+        yadro.extend(rebenok);
+        let mut disk = ::mega_os::boot::zapechatat(&yadro).unwrap();
+        disk.resize(0x8008 + 0x880, 0);
+        disk[0x8000..0x8008].copy_from_slice(b"SUNDUK35");
+        // внутри сундука ФС лежит с нуля: слот 1 -- это 0x8008.
+        let at = 0x8008 + (slot(1) - 0x9000) as usize;
+        disk[at] = 1;
+        disk[at + 2] = 14;
+        disk[at + 4..at + 8].copy_from_slice(b"fayl");
+        disk[at + 12] = 0;
+        for (i, b) in b"file from RAM\n".iter().enumerate() { disk[at + 16 + i] = *b; }
+        let mut mega = ::mega_os::boot::zagruzit(&disk).unwrap();
+        let nachalo = mega.cpu.cycles;
+        while !mega.cpu.halted && mega.cpu.cycles - nachalo < 400_000 {
+            mega.cpu.step(&mut mega.bus);
+        }
+        assert!(mega.cpu.halted, "проверка сундука убежала");
+        assert_eq!(word(&mut mega.bus, 0x8200), 1, "сундук при загрузке не открылся");
+        assert_eq!(word(&mut mega.bus, 0x8202), 1, "файл из сундука не совпал");
+    }
+}
+
+#[cfg(test)]
+mod fork_tests {
+    use super::*;
+
+    fn proba(text: &str) -> Bus {
+        let mut source = ".byte 0\n".repeat(VOROTA);
+        source.push_str(&include_str!("kernel.asm")
+            .replace("@REBENOK_LEN@", "4")
+            .replace("kartoshka:\n", "kartoshka:\njmp proverka_forka\n"));
+        source.push_str("\nproverka_forka:\ncli\n");
+        source.push_str(text);
+        let image = ::asm::assemble(&source).unwrap();
+        let mut bus = Bus::new(0);
+        bus.load();
+        bus.reset(&image).unwrap();
+        bus.capture_uart();
+        let mut cpu = ::cpu::Cpu::new();
+        cpu.pc = Word::from_u16(VOROTA as u16);
+        while !cpu.halted && cpu.cycles < 100_000 { cpu.step(&mut bus); }
+        assert!(cpu.halted, "проверка fork убежала");
+        bus
+    }
+
+    #[test]
+    fn fork_kopiruet_zhivoy_stek_i_vse_registry_krome_r0() {
+        let mut bus = proba("ldi r0, 0x55aa\npush r0\nldi r0, 0x4321\npush r0\nldi r5, 0x7777\nldi r0, 13\nint 2\nldi r1, 0x8200\nst [r1], r0\npop r2\nst [r1+2], r2\npop r2\nst [r1+4], r2\nst [r1+6], r5\nhlt\n");
+        assert_eq!(word(&mut bus, 0x8200), 4);
+        assert_eq!(word(&mut bus, 0x8202), 0x4321);
+        assert_eq!(word(&mut bus, 0x8204), 0x55aa);
+        assert_eq!(word(&mut bus, 0x8206), 0x7777);
+        assert_eq!(word(&mut bus, 0x8130), 1);
+        assert_eq!(word(&mut bus, 0x8132), 0);
+        let child_sp = word(&mut bus, 0x8060);
+        assert_eq!(child_sp, 0xbc00 - 22);
+        assert_eq!(word(&mut bus, child_sp + 12), 0);
+        assert_eq!(word(&mut bus, child_sp + 2), 0x7777);
+        assert_eq!(word(&mut bus, child_sp + 18), 0x4321);
+        assert_eq!(word(&mut bus, child_sp + 20), 0x55aa);
+        assert_eq!(word(&mut bus, 0x8062), 1);
+        assert_eq!(word(&mut bus, 0x806a), 0xbc00);
+    }
+
+    #[test]
+    fn fork_otkazyvaet_bez_slota_i_ne_trogaet_ego_stek() {
+        let mut bus = proba("ldi r1, 0x8062\nldi r0, 1\nst [r1], r0\nldi r1, 0xbbfe\nldi r0, 0x5678\nst [r1], r0\nldi r0, 13\nint 2\nldi r1, 0x8200\nst [r1], r0\nhlt\n");
+        assert_eq!(word(&mut bus, 0x8200), 65535);
+        assert_eq!(word(&mut bus, 0x8130), 0);
+        assert_eq!(word(&mut bus, 0x8132), 1);
+        assert_eq!(word(&mut bus, 0xbbfe), 0x5678);
+    }
+
+    #[test]
+    fn fork_vozvrashchaet_pid_odin_dlya_slota_nol() {
+        let mut bus = proba("ldi r1, 0x8100\nldi r0, 3\nst [r1], r0\nldi r1, 0x8002\nldi r0, 0\nst [r1], r0\nldi r1, 0x8062\nldi r0, 1\nst [r1], r0\nldi r1, 0x806a\nldi r0, 0xbc00\nst [r1], r0\nldi sp, 0xbc00\nldi r0, 13\nint 2\nldi r1, 0x8200\nst [r1], r0\nhlt\n");
+        assert_eq!(word(&mut bus, 0x8200), 1);
+        assert_eq!(word(&mut bus, 0x8002), 1);
+        let child_sp = word(&mut bus, 0x8000);
+        assert_eq!(child_sp, 0xb000 - 18);
+        assert_eq!(word(&mut bus, child_sp + 12), 0);
+    }
+
+    #[test]
+    fn rebenok_v_slote_tri_prosypaetsya_posle_idle() {
+        let mut bus = proba("sti\nldi r0, 13\nint 2\njz r0, spyashchiy_rebenok\nldi r0, 0\nldi r1, 0x8022\nst [r1], r0\nldi r1, 0x8042\nst [r1], r0\nldi r0, 2\nldi r1, 2\nint 2\nldi r0, 0x1234\nldi r1, 0x8212\nst [r1], r0\nldi r0, 4\nldi r1, 0\nint 2\nhlt\nspyashchiy_rebenok:\nldi r0, 2\nldi r1, 1\nint 2\nldi r0, 0xbeef\nldi r1, 0x8210\nst [r1], r0\nldi r0, 4\nldi r1, 0\nint 2\nhlt\n");
+        assert_eq!(word(&mut bus, 0x810e), 0x600d);
+        assert_eq!(word(&mut bus, 0x8210), 0xbeef);
+        assert_eq!(word(&mut bus, 0x8212), 0x1234);
+        assert_eq!(word(&mut bus, 0x810c), 2);
+        assert_eq!(word(&mut bus, 0x8108), 2);
+        assert!(word(&mut bus, 0x8102) >= 2);
+        assert!(word(&mut bus, 0x8086) > 0, "планировщик не запускал бездельника");
+    }
+
+    #[test]
+    fn fork_ne_kopiruet_krivoj_ili_chuzhoj_stek() {
+        for &stack in &[0xaf01u16, 0xab00, 0xb020] {
+            let mut bus = proba(&format!("ldi sp, {}\nldi r0, 13\nint 2\nldi r1, 0x8200\nst [r1], r0\nhlt\n", stack));
+            assert_eq!(word(&mut bus, 0x8200), 65535);
+            assert_eq!(word(&mut bus, 0x8130), 0);
+            assert_eq!(word(&mut bus, 0x8132), 1);
+            assert_eq!(word(&mut bus, 0x8062), 0);
+        }
     }
 }

@@ -102,7 +102,9 @@ fn proverit_shapku(image: &[u8], fingerprint: u64) -> Result<(), String> {
         return Err("Мега-ОС: неизвестные флаги sealed-образа".into());
     }
     let len = word(image, 8) as usize;
-    if len < 4 || len > POTOL_OK - YADRO as usize || image.len() != SHAPKA + len || word(image, 10) != YADRO {
+    // сундук с ФС лежит на диске после ядра, поэтому образ имеет право быть
+    // длиннее шапки с ядром. короче -- уже беда.
+    if len < 4 || len > POTOL_OK - YADRO as usize || image.len() < SHAPKA + len || word(image, 10) != YADRO {
         return Err("Мега-ОС: размер или адрес ядра не помещается в карту RAM".into());
     }
     let mut recorded = 0u64;

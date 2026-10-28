@@ -16,6 +16,11 @@ pub const RAYCAST: &'static str = include_str!("raycast.c");
 /// WAD-парсер. Читает диск потоком, потому что в 64 КБ WAD не влезает,
 /// а карту E1M1 рисует сверху. Это не Doom, но буквы те же.
 pub const WAD: &'static str = include_str!("wad.c");
+/// Стены из E1M1 переезжают в сетку 64×64. Смотри чертёж №49.
+pub const WAD3D: &'static str = include_str!("wad3d.c");
+/// Пиксельный атлас из гостевого ПЗУ. Смотри чертёж №48.
+pub const PIXEL: &'static str = include_str!("pixel.asm");
+pub const FONT8: &'static str = include_str!("font8.asm");
 pub const SELFTEST: &'static str = include_str!("selftest.asm");
 pub const PLAYER: &'static str = include_str!("player.asm");
 pub const HELLO: &'static str = include_str!("hello.asm");
@@ -241,5 +246,106 @@ mod wad_tests {
         assert!(lit > 20, "в кадре всего {} непустых клеток", lit);
         assert!(t0.elapsed() < ::std::time::Duration::from_secs(5),
             "тест шёл {:?}, а обещали меньше пяти секунд", t0.elapsed());
+    }
+}
+
+#[cfg(test)]
+mod wad3d_tests {
+    fn room(px: i16, angle: u16, width: i16) -> Vec<u8> {
+        let mut things = Vec::new();
+        for &n in &[px as u16, 0, angle, 1, 7] { things.extend_from_slice(&n.to_le_bytes()); }
+        let mut verts = Vec::new();
+        for &(x, y) in &[(-width, -150i16), (width, -150), (width, 150), (-width, 150)] {
+            verts.extend_from_slice(&x.to_le_bytes()); verts.extend_from_slice(&y.to_le_bytes());
+        }
+        let mut lines = Vec::new();
+        for &(a, b) in &[(0u16, 1u16), (1, 2), (2, 3), (3, 0)] {
+            for &n in &[a, b, 1, 0, 0, 0, 65535] { lines.extend_from_slice(&n.to_le_bytes()); }
+        }
+        let mut wad = b"PWAD".to_vec();
+        wad.extend_from_slice(&4u32.to_le_bytes());
+        wad.extend_from_slice(&0u32.to_le_bytes());
+        let mut entries = Vec::new();
+        for &(name, data) in &[("E1M1", &[][..]), ("THINGS", &things[..]), ("LINEDEFS", &lines[..]), ("VERTEXES", &verts[..])] {
+            entries.push((wad.len() as u32, data.len() as u32, name));
+            wad.extend_from_slice(data);
+        }
+        let directory = wad.len() as u32;
+        wad[8..12].copy_from_slice(&directory.to_le_bytes());
+        for (offset, size, name) in entries {
+            wad.extend_from_slice(&offset.to_le_bytes());
+            wad.extend_from_slice(&size.to_le_bytes());
+            let mut bytes = [0; 8];
+            bytes[..name.len()].copy_from_slice(name.as_bytes());
+            wad.extend_from_slice(&bytes);
+        }
+        wad
+    }
+
+    fn run(wad: Vec<u8>) -> (::bus::Bus, u16, u64, String) {
+        let source = ::compile_c_big(::WAD3D.as_bytes().to_vec()).unwrap();
+        let image = ::asm::assemble(&source).unwrap();
+        assert!(image.len() < 0xc000, "программа залезла в видеостраницу");
+        let mut bus = ::bus::Bus::new(0);
+        bus.load();
+        bus.attach_disk(wad);
+        bus.reset(&image).unwrap();
+        bus.capture_uart();
+        let mut cpu = ::cpu::Cpu::new();
+        while !cpu.halted && cpu.cycles < 20_000_000 { cpu.step(&mut bus); }
+        assert!(cpu.halted, "WAD-стены убежали за двадцать миллионов");
+        let output = String::from_utf8(bus.take_captured()).unwrap();
+        (bus, cpu.r[0].to_u16(), cpu.cycles, output)
+    }
+
+    #[test]
+    fn komnata_iz_wad_daet_steny_s_polom_i_potolkom() {
+        let (bus, result, cycles, output) = run(room(0, 90, 300));
+        assert_eq!(result, 0, "{}", output);
+        assert_eq!(bus.video.frames, 4);
+        assert!(output.contains("wad3d: things=1 lines=4 verts=4 frames=4\n"), "{}", output);
+        let frame = bus.text_page(0);
+        assert!(frame.contains('~') && frame.contains('_'));
+        assert!(frame.chars().any(|c| "#@%*+=-:.".contains(c)));
+        println!("[wad3d] {} тактов\n{}", cycles, frame);
+    }
+
+    #[test]
+    fn steny_zavisyat_ot_thing_ugla_i_geometrii() {
+        let (base, result, _, out) = run(room(0, 90, 300));
+        assert_eq!(result, 0, "{}", out);
+        for &(x, angle, width) in &[(200i16, 90u16, 300i16), (0, 0, 300), (0, 90, 150)] {
+            let (bus, result, _, out) = run(room(x, angle, width));
+            assert_eq!(result, 0, "{}", out);
+            assert_ne!(bus.text_page(0), base.text_page(0), "x={}, angle={}, width={}", x, angle, width);
+        }
+        let mut wad = room(0, 90, 300);
+        wad[..4].copy_from_slice(b"IWAD");
+        let (bus, result, _, out) = run(wad);
+        assert_eq!(result, 0, "{}", out);
+        assert_eq!(bus.text_page(0), base.text_page(0));
+    }
+
+    #[test]
+    fn krivye_karty_otklonyayutsya_do_pervogo_kadra() {
+        let mut cases = vec![Vec::new(), b"BAD!".to_vec()];
+        let mut wad = room(0, 90, 300);
+        wad[22..24].copy_from_slice(&99u16.to_le_bytes());
+        cases.push(wad);
+        let mut wad = room(0, 90, 300);
+        wad[18..20].copy_from_slice(&2u16.to_le_bytes());
+        cases.push(wad);
+        cases.push(room(500, 90, 300));
+        cases.push(room(0, 90, 17000));
+        let mut wad = room(0, 90, 300);
+        let dir = u32::from_le_bytes([wad[8], wad[9], wad[10], wad[11]]) as usize;
+        wad[dir + 40..dir + 48].copy_from_slice(b"E1M2\0\0\0\0");
+        cases.push(wad);
+        for (case, wad) in cases.into_iter().enumerate() {
+            let (bus, result, _, output) = run(wad);
+            assert_eq!(result, 1, "случай {}: {}", case, output);
+            assert_eq!(bus.video.frames, 0, "{}", output);
+            assert!(output.starts_with("wad3d:"));
+        }
     }
 }

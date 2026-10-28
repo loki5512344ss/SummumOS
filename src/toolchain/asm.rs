@@ -32,6 +32,14 @@ mod byuro_tests {
     use super::assemble;
 
     #[test]
+    fn dvoichnye_bukvy_prolezyut_v_rom() {
+        assert_eq!(assemble(".byte 0b1000_0001, 0b01111110").unwrap(), vec![129, 126]);
+        assert_eq!(assemble("ldi r0, 0b1000_0001").unwrap(), assemble("ldi r0, 129").unwrap());
+        assert!(assemble(".byte 0b102").is_err());
+        assert!(assemble("ldi r0, 0b10000000000000000").is_err());
+    }
+
+    #[test]
     fn odna_metka_ne_mozhet_poluchat_dve_pensii() {
         assert!(assemble("x: nop\nx: hlt\njmp x").is_err());
     }
@@ -144,6 +152,9 @@ fn eval(e: &str, labels: &HashMap<String, u16>) -> Result<u16, String> {
     }
     if e.starts_with("0x") {
         return u16::from_str_radix(&e[2..], 16).map_err(|x| format!("{}: {}", e, x));
+    }
+    if e.starts_with("0b") {
+        return u16::from_str_radix(&e[2..].replace("_", ""), 2).map_err(|x| format!("{}: {}", e, x));
     }
     if e.len() > 0 && e.as_bytes()[0] >= b'0' && e.as_bytes()[0] <= b'9' {
         return e.parse::<u16>().map_err(|x| format!("{}: {}", e, x));

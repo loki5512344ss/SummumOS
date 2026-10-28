@@ -49,6 +49,9 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
         ("apps/chess.c", include_str!("chess.c")),
         ("apps/raycast.c", include_str!("raycast.c")),
         ("apps/wad.c", include_str!("wad.c")),
+        ("apps/wad3d.c", include_str!("wad3d.c")),
+        ("apps/pixel.asm", include_str!("pixel.asm")),
+        ("apps/font8.asm", include_str!("font8.asm")),
         ("apps/selftest.asm", include_str!("selftest.asm")),
         ("apps/player.asm", include_str!("player.asm")),
         ("apps/vblank.asm", include_str!("vblank.asm")),
@@ -65,7 +68,7 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-pub const SUMMA: u32 = 0x083371b6; // СУММА: 0x083371b6
+pub const SUMMA: u32 = 0x2062307d; // СУММА: 0x2062307d
 
 pub fn summa() -> u32 { check::zone_sum(&files(), 1) }
 pub fn check_own() -> bool {

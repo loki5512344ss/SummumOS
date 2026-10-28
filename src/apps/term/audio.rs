@@ -51,6 +51,7 @@ fn pohorony(mut child: Child) {
 }
 
 enum Sink {
+    Off,
     Pipe(Uvolnenie),
     Wav(Vec<u8>),
 }
@@ -109,6 +110,10 @@ impl AudioOut {
     }
 
     pub fn open(rate: u32) -> AudioOut {
+        // Тестовый певец молчит даже при чужом HELLO_AUDIO=pipe.
+        if cfg!(test) || ::std::env::var("HELLO_AUDIO").map(|v| v == "off").unwrap_or(false) {
+            return AudioOut { sink: Sink::Off, rate: rate, finished: false };
+        }
         let rs = format!("{}", rate);
         let pw = Command::new("pw-cat")
             .args(&[
@@ -148,6 +153,7 @@ impl AudioOut {
 
     pub fn write(&mut self, data: &[u8]) {
         match self.sink {
+            Sink::Off => {}
             Sink::Pipe(ref delo) => {
                 let _ = delo.tx.try_send(data.to_vec());
             }
@@ -160,8 +166,9 @@ impl AudioOut {
             return;
         }
         self.finished = true;
-        let sink = std::mem::replace(&mut self.sink, Sink::Wav(Vec::new()));
+        let sink = std::mem::replace(&mut self.sink, Sink::Off);
         match sink {
+            Sink::Off => {}
             Sink::Pipe(Uvolnenie { tx, otvet, stop, rab, mut child }) => {
                 drop(tx);
                 let mut podpisano = otvet.recv_timeout(Duration::from_millis(750)).is_ok();
@@ -211,6 +218,23 @@ impl AudioOut {
 impl Drop for AudioOut {
     fn drop(&mut self) {
         self.finish();
+    }
+}
+
+#[cfg(test)]
+mod tishina_tests {
+    use super::*;
+
+    #[test]
+    fn testovyy_pevec_ne_otkryvaet_ni_trubu_ni_fayl() {
+        let mut audio = AudioOut::open(8000);
+        audio.write(&[0, 128, 255]);
+        match audio.sink {
+            Sink::Off => {}
+            _ => panic!("тестовый певец открыл аудиовыход"),
+        }
+        audio.finish();
+        audio.finish();
     }
 }
 

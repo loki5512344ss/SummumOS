@@ -6,7 +6,8 @@
 // (младший полубайт красит букву, старший -- обои, стек сюда не достаёт),
 // 0xF000 первая страница текста,
 // 0xFB00 таблица страниц, 0xFE00 векторы, 0xFF00 УАРТ и прочие железки.
-// 0xFF20 -- показать кадр, бит 1 включает цвет и уже не выключается,
+// 0xFF20 -- показать кадр, бит 1 включает цвет, бит 2 -- точки 64×48,
+// обе защёлки держатся до новой шины, потому что отпуск без обратного билета,
 // 0xFF26 -- какая страница считается первой.
 // Вторая страница притворяется первой. Не говори об этом таблице страниц.
 // ===========================================================================
@@ -34,6 +35,9 @@ pub const VTABLE: u16 = 0xFE00;
 pub const VRAM: u16 = 0xF000;
 pub const VID_W: usize = 64;
 pub const VID_H: usize = 24;
+/// Две точки на строку терминала. Старший бит байта смотрит влево.
+pub const PIX_H: usize = 48;
+pub const PIX_LEN: usize = VID_W * PIX_H / 8;
 pub const VID_CTL: u16 = 0xFF20;
 /// Скрытая страница видео. Бит 0: ноль -- рисуем в 0xF000, один -- в 0xC000.
 pub const VID_PAGE: u16 = 0xFF26;
@@ -59,6 +63,20 @@ pub const DISK_A0: u16 = 0xFF30;
 pub const DISK_A1: u16 = 0xFF31;
 pub const DISK_A2: u16 = 0xFF32;
 pub const DISK_DATA: u16 = 0xFF33;
+/// Диск резиновый, но не бесконечный: дальше восьми мегабайт хост не растёт.
+const DISK_LIMIT: usize = 8 * 1024 * 1024;
+/// Переключатель «квартир» (чертёж №51). Запись с битом 7 -- вымести из
+/// квартиры мебель, без бита -- переехать в неё, забрав копию памяти жильца,
+/// которого выгнали. Гость так процессу память изолирует.
+pub const SPACE: u16 = 0xFF27;
+/// Сколько квартир в доме. Четыре, потому что слотов PCB четыре.
+pub const SPACES: usize = 4;
+/// Приватная зона: 0x9900..0xC000 живёт в квартире текущего процесса.
+/// Ниже -- ядро, ФС и PCB (общие на всех), выше -- видео (экран-то один).
+/// Границу подняли с 0x8800: RAM-ФС сидит на 0x9000..0x9880 и обязана быть
+/// одна на всех, иначе ребёнок из другой квартиры не видит файлы родителя.
+pub const PRIV_NIZ: u16 = 0x9900;
+pub const PRIV_VERKH: u16 = 0xC000;
 
 pub const PSG_BASE: u16 = 0xFF40;
 pub const PSG_LAST: u16 = 0xFF4A;
@@ -87,6 +105,8 @@ pub struct Video {
     pub frames: u64,
     /// Включён ли цвет. По умолчанию текст: цвет надо заслужить записью в 0xFF20.
     pub color: bool,
+    /// Буквы ушли в отпуск, вместо них приехали полублоки. Чертёж №48.
+    pub pixels: bool,
 }
 
 pub struct Timer {
@@ -351,6 +371,9 @@ pub struct Bus {
     pub muted: bool,
     disk: Vec<u8>,
     disk_addr: u32,
+    disk_dirty: bool,
+    space: u8,
+    space_empty: [bool; SPACES],
     input: Option<(Vec<u8>, usize)>,
     pub clock: u64,
     rng: u16,
@@ -390,6 +413,7 @@ impl Bus {
                 next: None,
                 frames: 0,
                 color: false,
+                pixels: false,
             },
             psg: Psg {
                 regs: [0; 11],
@@ -403,6 +427,9 @@ impl Bus {
             muted: false,
             disk: Vec::new(),
             disk_addr: 0,
+            disk_dirty: false,
+            space: 0,
+            space_empty: [false; SPACES],
             input: None,
             clock: 0,
             rng: 0xACE1,
@@ -449,6 +476,17 @@ impl Bus {
         Some(page | (addr & 0x00ff))
     }
 
+    /// Превращает логический адрес в физический (чертёж №51). Приватная зона
+    /// плавает по квартирам, всё остальное всегда лежит в квартире ноль:
+    /// ядро, ФС, PCB и видео -- общие, у них один адрес и одна память.
+    fn flat(&self, addr: u16) -> usize {
+        if addr >= PRIV_NIZ && addr < PRIV_VERKH {
+            addr as usize + self.space as usize * 0xFF00
+        } else {
+            addr as usize
+        }
+    }
+
     /// Вторая страница живёт по адресу 0xC000 и прикидывается первой.
     /// Сначала врёт MMU, потом врёт видео: наоборот нельзя, иначе таблица
     /// страниц увидит чужую мебель и вызовет пожарного.
@@ -466,19 +504,18 @@ impl Bus {
         (self.ram_replays, self.ram_replay_steps)
     }
 
-    fn ram_case_index(addr: u16) -> Option<usize> {
-        let a = addr as usize;
-        if a >= RAM_CASE_START && a < RAM_CASE_START + RAM_CASE_COUNT {
-            Some(a - RAM_CASE_START)
+    fn ram_case_index(addr: usize) -> Option<usize> {
+        if addr >= RAM_CASE_START && addr < RAM_CASE_START + RAM_CASE_COUNT {
+            Some(addr - RAM_CASE_START)
         } else { None }
     }
 
-    fn ram_replay(&mut self, addr: u16) -> Option<u8> {
+    fn ram_replay(&mut self, addr: usize) -> Option<u8> {
         let index = match Bus::ram_case_index(addr) { Some(i) => i, None => return None };
         self.ram_replays = self.ram_replays.wrapping_add(1);
         self.ram_replay_steps = self.ram_replay_steps.wrapping_add(
             self.ram_cases[index].len.min(RAM_RECEIPTS) as u64);
-        self.ram_cases[index].replay(addr)
+        self.ram_cases[index].replay(addr as u16)
     }
 
     fn sync_ram_cases(&mut self) {
@@ -491,16 +528,16 @@ impl Bus {
     }
 
     /// Чтение из RAM через кэш. Промах заполняет строку и дёргает таймер.
-    fn ram_read(&mut self, addr: u16) -> u8 {
+    fn ram_read(&mut self, addr: usize) -> u8 {
         // это не цикл, это сосиска пошла по кругу за справкой.
         let replayed = if Bus::ram_case_index(addr).is_some() {
             match self.ram_replay(addr) {
-                Some(value) if value == self.ram[addr as usize] => Some(value),
+                Some(value) if value == self.ram[addr] => Some(value),
                 _ => { self.fault = true; return 0; }
             }
         } else { None };
         let idx = ((addr >> 3) as usize) & 63;
-        let tag = addr >> 9;
+        let tag = (addr >> 9) as u16;
         if self.cache.valid[idx] && self.cache.tag[idx] == tag {
             let value = self.cache.data[idx][(addr & 7) as usize];
             if replayed.map_or(false, |r| r != value) {
@@ -512,9 +549,10 @@ impl Bus {
             return replayed.unwrap_or(value);
         }
         self.cache.misses += 1;
-        let base = (addr as usize) & !7usize;
+        let base = addr & !7usize;
         for i in 0..8 {
-            let a = (base + i).min(0xFEFF);
+            // квартиры растут за 16 бит, так что тут физическая граница дома
+            let a = (base + i).min(self.ram.len() - 1);
             self.cache.data[idx][i] = self.ram[a];
         }
         self.cache.tag[idx] = tag;
@@ -524,18 +562,18 @@ impl Bus {
     }
 
     /// Запись в RAM. Строку кэша выбрасываем: она теперь врёт.
-    fn ram_write(&mut self, addr: u16, v: u8) {
+    fn ram_write(&mut self, addr: usize, v: u8) {
         if let Some(index) = Bus::ram_case_index(addr) {
-            let old = self.ram[addr as usize];
+            let old = self.ram[addr];
             if self.ram_replay(addr) != Some(old)
-                || !self.ram_cases[index].append(addr, old, v) {
+                || !self.ram_cases[index].append(addr as u16, old, v) {
                 self.fault = true;
                 return;
             }
         }
-        self.ram[addr as usize] = v;
+        self.ram[addr] = v;
         let idx = ((addr >> 3) as usize) & 63;
-        if self.cache.valid[idx] && self.cache.tag[idx] == (addr >> 9) {
+        if self.cache.valid[idx] && self.cache.tag[idx] == ((addr >> 9) as u16) {
             self.cache.valid[idx] = false;
         }
     }
@@ -596,10 +634,34 @@ impl Bus {
 
     pub fn attach_disk(&mut self, image: Vec<u8>) {
         self.disk = image;
+        self.disk_dirty = false;
+    }
+
+    /// Пустил ли гость руки к диску. По этой защёлке хост решает, записывать
+    /// ли диск обратно в файл или дальше делать вид, что всё цело.
+    pub fn disk_dirty(&self) -> bool {
+        self.disk_dirty
+    }
+
+    /// Диск каким его переделал гость. Включая места, которых не было.
+    pub fn disk_image(&self) -> &[u8] {
+        &self.disk
+    }
+
+    /// Перекидывает хост в чужую квартиру. Гостю этот выход закрыт: у гостя
+    /// есть только порт, а хосту позволено лезть в чужие комнаты напрямую.
+    pub fn set_space(&mut self, n: u8) {
+        if (n as usize) < SPACES {
+            self.space = n;
+            // после переезда весь кэш врёт: там физические адреса
+            self.cache.valid = [false; 64];
+        }
     }
 
     /// Находит, чем бы пикнуть. Сначала ищет плеер, потом сдаётся и пишет файл.
     pub fn open_audio(&mut self) {
+        // Гостевой оркестр на проверке не получает ключ от колонок.
+        if cfg!(test) { return; }
         let mode = match std::env::var("HELLO_AUDIO") {
             Ok(m) => m,
             Err(_) => {
@@ -712,6 +774,28 @@ impl Bus {
         if b >= 32 && b < 127 { b as char } else { ' ' }
     }
 
+    /// Два бита пришли за одной буквой. Пустому достался пробел.
+    fn pixel_char(&self, base: u16, x: usize, y: usize) -> char {
+        let at = base as usize + y * 2 * (VID_W / 8) + x / 8;
+        let mask = 0x80 >> (x % 8);
+        let top = self.ram[at] & mask != 0;
+        let bottom = self.ram[at + VID_W / 8] & mask != 0;
+        match (top, bottom) {
+            (true, true) => '█', (true, false) => '▀',
+            (false, true) => '▄', _ => ' ',
+        }
+    }
+
+    pub fn pixel_page(&self, page: u8) -> String {
+        let base = Bus::page_base(page);
+        let mut s = String::new();
+        for y in 0..VID_H {
+            for x in 0..VID_W { s.push(self.pixel_char(base, x, y)); }
+            if y + 1 < VID_H { s.push('\n'); }
+        }
+        s
+    }
+
     /// Собирает текст выбранной страницы. Ноль -- та, что нарисована на бумаге,
     /// один -- та, что лежит под ней и делает вид, что её нет.
     pub fn text_page(&self, page: u8) -> String {
@@ -739,7 +823,6 @@ impl Bus {
         for y in 0..VID_H {
             for x in 0..VID_W {
                 let at = y * VID_W + x;
-                let b = self.ram[base as usize + at];
                 let attr = self.ram[VID_ATTR as usize + at];
                 let fg = (attr & 0x0f) as i16;
                 let bg = (attr >> 4) as i16;
@@ -751,7 +834,11 @@ impl Bus {
                     let _ = write!(s, "\x1b[48;5;{}m", bg);
                     prev_bg = bg;
                 }
-                s.push(Bus::cell_char(b));
+                s.push(if self.video.pixels {
+                    self.pixel_char(base, x, y)
+                } else {
+                    Bus::cell_char(self.ram[base as usize + at])
+                });
             }
             // сброс в конце строки: иначе фон утечёт в соседнюю и в обои.
             s.push_str("\x1b[0m");
@@ -768,6 +855,8 @@ impl Bus {
     fn frame(&self) -> String {
         if self.video.color {
             self.frame_ansi()
+        } else if self.video.pixels {
+            self.pixel_page(self.vid_page & 1)
         } else {
             self.text_page(self.vid_page & 1)
         }
@@ -981,10 +1070,13 @@ impl Bus {
         if addr == VID_PAGE {
             return self.vid_page & 1;
         }
+        if addr == SPACE {
+            return self.space;
+        }
         if addr >= 0xFF00 {
             return 0;
         }
-        self.ram_read(addr)
+        self.ram_read(self.flat(addr))
     }
 
     pub fn poke(&mut self, addr: u16, v: u8) {
@@ -1007,6 +1099,9 @@ impl Bus {
             if v & 2 == 2 {
                 self.video.color = true;
             }
+            if v & 4 == 4 {
+                self.video.pixels = true;
+            }
             if v & 1 == 1 {
                 self.present();
             }
@@ -1022,6 +1117,54 @@ impl Bus {
         }
         if addr == DISK_A2 {
             self.disk_addr = (self.disk_addr & 0x00ffff) | ((v as u32) << 16);
+            return;
+        }
+        if addr == DISK_DATA {
+            // запись на диск: байт в дырку по адресу, адрес ползёт вперёд.
+            // Дырка за пределами диска зарастает нулями, но не дальше лимита.
+            let a = self.disk_addr as usize;
+            if a < DISK_LIMIT {
+                if a >= self.disk.len() {
+                    self.disk.resize(a + 1, 0);
+                }
+                self.disk[a] = v;
+                self.disk_dirty = true;
+            }
+            self.disk_addr += 1;
+            return;
+        }
+        if addr == SPACE {
+            // квартиры: бит 7 выметает, без бита -- переезд с копией мебели
+            let n = (v & 0x7f) as usize;
+            if n < SPACES {
+                if v & 0x80 == 0x80 {
+                    let start = n * 0xFF00;
+                    for i in start..start + 0xFF00 {
+                        self.ram[i] = 0;
+                    }
+                    self.space_empty[n] = true;
+                    // сбросили чужую квартиру -- кэш всё равно чистим:
+                    // в нём могли остаться строки её физических адресов
+                    self.cache.valid = [false; 64];
+                } else if self.space_empty[n] {
+                    // пустая квартира при первом заселении получает копию
+                    // памяти того, кто переехал: так fork и изолирует
+                    let from = self.space as usize * 0xFF00;
+                    let to = n * 0xFF00;
+                    for i in 0..0xFF00 {
+                        self.ram[to + i] = self.ram[from + i];
+                    }
+                    self.space_empty[n] = false;
+                }
+                // выметание (бит 7) не переносит жильца: текущий процесс
+                // остаётся в своей квартире, иначе копия мебели поедет
+                // сама из себя, а новый жилец получит пустую комнату.
+                if v & 0x80 == 0 && n != self.space as usize {
+                    self.space = n as u8;
+                    // после переезда весь кэш врёт: там физические адреса
+                    self.cache.valid = [false; 64];
+                }
+            }
             return;
         }
         if addr == TIMER_LO {
@@ -1063,7 +1206,7 @@ impl Bus {
         if addr >= 0xFF00 {
             return;
         }
-        self.ram_write(addr, v);
+        self.ram_write(self.flat(addr), v);
     }
 
     /// Кладёт образ в память. Или достаёт. Смотря как посмотреть.
@@ -1072,13 +1215,16 @@ impl Bus {
             return Err("автобус ещё не родился, пассажирам выдано ничего".to_string());
         }
         // память резиновая, но только в четверг и только у соседа.
-        let spravka = image.len().checked_sub(self.ram.len()).unwrap_or(0);
-        if spravka != 0 || image.len() > self.ram.len() {
-            return Err(format!("грузчик: {} байт не лезут в RAM на {}", image.len(), self.ram.len()));
+        // образ кладётся в квартиру ноль: остальные квартиры ему не родня.
+        let spravka = image.len().checked_sub(0xFF00).unwrap_or(0);
+        if spravka != 0 || image.len() > 0xFF00 {
+            return Err(format!("грузчик: {} байт не лезут в одну квартиру на 65280",
+                image.len()));
         }
         for (i, b) in image.iter().enumerate() {
             self.ram[i] = *b;
         }
+        self.space = 0;
         self.sync_ram_cases();
         self.cache.valid = [false; 64];
         self.fault = false;
@@ -1087,7 +1233,11 @@ impl Bus {
 
     /// Включает чипы памяти. Нажми кнопку и скажи спасибо.
     pub fn load(&mut self) {
-        self.ram = vec![0u8; 0xFF00];
+        self.ram = vec![0u8; 0xFF00 * SPACES];
+        self.space = 0;
+        // квартира ноль занята ядром, остальные пусты: ждут первого жильца,
+        // а при заселении получат копию памяти переехавшего (чертёж №51)
+        self.space_empty = [false, true, true, true];
         self.sync_ram_cases();
         self.cache.valid = [false; 64];
         self.fault = false;
@@ -1196,7 +1346,7 @@ mod ram_case_tests {
                 bus.poke(addr, byte);
                 assert_eq!(bus.peek(addr), byte);
                 assert!(!bus.take_fault());
-                let case = &bus.ram_cases[Bus::ram_case_index(addr).unwrap()];
+                let case = &bus.ram_cases[Bus::ram_case_index(addr as usize).unwrap()];
                 assert_eq!(case.len, (n + 1).min(RAM_RECEIPTS));
                 assert_eq!(case.replay(addr), Some(byte));
                 assert_eq!(case.baseline_serial, (n + 1).saturating_sub(RAM_RECEIPTS) as u64);
@@ -1458,5 +1608,186 @@ mod video_color_tests {
         assert!(s.contains("\x1b[48;5;"), "в выводе нет краски обоев");
         assert!(s.contains("#") && s.contains("+") && s.contains("."));
         assert_eq!(bus.peek(VID_PAGE) & 1, 0);
+    }
+}
+
+#[cfg(test)]
+mod pixel_tests {
+    use super::*;
+
+    #[test]
+    fn dva_bita_sobirayutsya_v_polubloki_i_krasyatsya() {
+        let mut bus = Bus::new(0);
+        bus.load();
+        bus.poke(VRAM, 0xa0);
+        bus.poke(VRAM + 8, 0x60);
+        bus.poke(VRAM + (PIX_LEN - 1) as u16, 1);
+        bus.poke(VID_CTL, 4);
+        assert!(bus.video.pixels);
+        assert!(!bus.video.color);
+        let s = bus.frame();
+        assert!(s.starts_with("▀▄█ "));
+        assert_eq!(s.lines().count(), 24);
+        assert!(s.lines().all(|line| line.chars().count() == 64));
+        assert_eq!(s.chars().last(), Some('▄'));
+        bus.poke(VID_ATTR, 0x1e);
+        bus.poke(VID_CTL, 2);
+        assert!(bus.frame().starts_with("\x1b[38;5;14m\x1b[48;5;1m▀"));
+        bus.poke(VID_PAGE, 1);
+        assert_eq!(bus.pixel_page(1).chars().filter(|c| *c != ' ' && *c != '\n').count(), 0);
+        bus.poke(VRAM, 0x80);
+        assert!(bus.pixel_page(1).starts_with('▀'));
+        assert!(bus.pixel_page(0).starts_with("▀▄█"));
+    }
+
+    #[test]
+    fn pixel_demo_chitaet_rom_i_ne_portit_sosedey() {
+        let source = format!("{}\n{}", include_str!("../apps/pixel.asm"), include_str!("../apps/font8.asm"));
+        let image = ::asm::assemble(&source).unwrap();
+        let mut bus = Bus::new(0);
+        bus.load();
+        bus.reset(&image).unwrap();
+        bus.poke(VRAM - 1, 0x5a);
+        bus.poke(VRAM + PIX_LEN as u16, 0xa5);
+        let mut cpu = ::cpu::Cpu::new();
+        while !cpu.halted && cpu.cycles < 100_000 { cpu.step(&mut bus); }
+        assert!(cpu.halted);
+        assert_eq!(bus.video.frames, 2);
+        assert!(bus.video.pixels && bus.video.color);
+        assert_eq!(bus.peek(VRAM - 1), 0x5a);
+        assert_eq!(bus.peek(VRAM + PIX_LEN as u16), 0xa5);
+        let font_source = format!("hlt\n{}", include_str!("../apps/font8.asm"));
+        let font = ::asm::assemble(&font_source).unwrap();
+        assert_eq!(font.len(), 4 + 96 * 8);
+        for glyph in 0..48usize {
+            for row in 0..8usize {
+                let at = (glyph / 8) * 64 + row * 8 + glyph % 8;
+                assert_eq!(bus.peek(VRAM + at as u16), font[4 + 384 + glyph * 8 + row]);
+            }
+        }
+        assert!(bus.pixel_page(0).contains('█'));
+    }
+}
+
+#[cfg(test)]
+mod tishina_tests {
+    use super::*;
+
+    #[test]
+    fn testovaya_shina_ne_zapuskaet_pevca() {
+        let mut bus = Bus::new(15);
+        bus.open_audio();
+        match bus.sink {
+            Sink::Off => {}
+            _ => panic!("тестовая шина открыла аудиовыход"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod kvartira_tests {
+    use super::*;
+
+    #[test]
+    fn pereyezd_v_pustuyu_kvartiru_kloniruet_pamyat_prozhivshego() {
+        let mut bus = Bus::new(0);
+        bus.load();
+        bus.poke(0xa000, 0x55);
+        // переехать в квартиру один: пустая, значит получит копию памяти
+        bus.poke(SPACE, 1);
+        assert_eq!(bus.peek(SPACE), 1);
+        assert_eq!(bus.peek(0xa000), 0x55, "квартира пустая, а не копия");
+        bus.poke(0xa000, 0xaa);
+        bus.poke(SPACE, 0);
+        assert_eq!(bus.peek(0xa000), 0x55, "чужая мебель прилипла к прежнему жильцу");
+        bus.poke(SPACE, 1);
+        assert_eq!(bus.peek(0xa000), 0xaa);
+        // общий диапазон (ниже 0x8800) у всех квартир один
+        bus.poke(0x9000, 7);
+        bus.set_space(0);
+        assert_eq!(bus.peek(0x9000), 7, "ФС должна быть одна на всех");
+    }
+
+    #[test]
+    fn vymerennaya_kvartira_pri_sleduyushchem_zaselenii_poluchaet_kopiyu_snova() {
+        let mut bus = Bus::new(0);
+        bus.load();
+        bus.poke(SPACE, 2);
+        bus.poke(0xa000, 0x11);
+        // выселить жильца и завалить его мусором
+        bus.poke(SPACE, 2 | 0x80);
+        assert_eq!(bus.peek(0xa000), 0, "после выселения квартира пуста");
+        bus.poke(0xa000, 0x22);
+        bus.set_space(0);
+        bus.poke(0xa000, 0x33);
+        // новый жилец переезжает и забирает копию памяти последнего жильца
+        bus.poke(SPACE, 2);
+        assert_eq!(bus.peek(0xa000), 0x33, "свежий жилец получил копию чужой памяти");
+        // а видеопамять у всех одна
+        bus.poke(VRAM, 9);
+        bus.set_space(1);
+        assert_eq!(bus.peek(VRAM), 9, "видео одно на весь дом");
+    }
+
+    #[test]
+    fn chuzhaya_kvartira_ne_vidit_obshchuy_pamyat_svoim_glazom() {
+        let mut bus = Bus::new(0);
+        bus.load();
+        bus.poke(SPACE, 1);
+        bus.poke(0xb000, 0x77); // стеки в приватной зоне -- каждый свои
+        bus.set_space(0);
+        assert_eq!(bus.peek(0xb000), 0, "приватная зона у квартиры ноль своя");
+        bus.poke(0xb000, 0x66);
+        bus.set_space(1);
+        assert_eq!(bus.peek(0xb000), 0x77);
+        assert_eq!(bus.peek(0x8100), 0, "ядро и счётчики -- общий этаж");
+        bus.poke(0x8100, 5);
+        bus.set_space(0);
+        assert_eq!(bus.peek(0x8100), 5);
+    }
+}
+
+#[cfg(test)]
+mod disk_write_tests {
+    use super::*;
+
+    #[test]
+    fn zapis_na_disk_idet_potokom_i_rastit_disk() {
+        let mut bus = Bus::new(0);
+        bus.load();
+        assert!(!bus.disk_dirty());
+        // адрес 0x4000 -- «сундук» Мега-ОС, за концом маленького диска
+        bus.poke(DISK_A0, 0x00);
+        bus.poke(DISK_A1, 0x40);
+        bus.poke(DISK_A2, 0x00);
+        for &b in &[b'M', b'E', b'G', b'A'] {
+            bus.poke(DISK_DATA, b);
+        }
+        assert!(bus.disk_dirty(), "гость писал, а шина считает, что нет");
+        assert_eq!(bus.disk_image().len(), 0x4004, "дырка заросла нулями до последнего байта");
+        assert_eq!(&bus.disk_image()[0x4000..0x4004], b"MEGA");
+        // чтение тем же потоком возвращает записанное
+        bus.poke(DISK_A0, 0x00);
+        bus.poke(DISK_A1, 0x40);
+        bus.poke(DISK_A2, 0x00);
+        assert_eq!(bus.peek(DISK_DATA), b'M');
+        assert_eq!(bus.peek(DISK_DATA), b'E');
+        // и диск можно отдать хосту обратно
+        let image = bus.disk_image().to_vec();
+        bus.attach_disk(image);
+        assert!(!bus.disk_dirty(), "подложили новый диск, грязь стёрлась");
+        assert_eq!(bus.peek(DISK_DATA), b'G');
+    }
+
+    #[test]
+    fn zapis_za_limitem_teryayetsya_no_ne_rastet_bezmerno() {
+        let mut bus = Bus::new(0);
+        bus.load();
+        bus.poke(DISK_A0, 0xff);
+        bus.poke(DISK_A1, 0xff);
+        bus.poke(DISK_A2, 0xff);
+        bus.poke(DISK_DATA, 7); // 0xFFFFFF -- дальше лимита, байт уходит в никуда
+        assert!(!bus.disk_dirty());
+        assert_eq!(bus.disk_image().len(), 0);
     }
 }
