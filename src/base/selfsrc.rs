@@ -60,6 +60,10 @@ pub fn self_src() -> String {
 	s.push_str(include_str!("../apps/player.asm"));
 	s.push_str(include_str!("../apps/kalkulyator.asm"));
 	s.push_str(include_str!("../apps/zhizn.asm"));
+	s.push_str(include_str!("../apps/tetris.asm"));
+	s.push_str(include_str!("../apps/spravochnik.asm"));
+	s.push_str(include_str!("../apps/spravochnik.rs"));
+	s.push_str(include_str!("../apps/chisla.rs"));
 	s.push_str(include_str!("../apps/vblank.asm"));
 	s.push_str(include_str!("../apps/color.asm"));
 	s.push_str(include_str!("../apps/term/mod.rs"));

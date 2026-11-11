@@ -86,6 +86,9 @@
 //  ######   #######  ##     ## ##     ##  #######  ##     ##  #######   ######
 // НЕ ТРОГАЙ, ОНО РАБОТАЕТ. Почему работает -- никто не знает, даже оно само.
 #![allow(dead_code, deprecated, unused_variables, unused_mut)]
+#![allow(unused_imports, unused_parens, non_snake_case)]
+#![allow(non_camel_case_types, bare_trait_objects)]
+#![allow(ellipsis_inclusive_range_patterns)]
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -420,19 +423,29 @@ fn main() {
 		}
 	}
 
-	// --zhizn и --kalkulyator: игры на том же процессоре. Жизнь ничего
-	// не ждёт от мира и сама докручивает четыре поколения; калькулятор
-	// ждёт строку с stdin, а если stdin -- терминал, то честно посчитает
-	// ноль, потому что пустота -- это тоже число.
-	if let Some(i) = args.iter().position(|a| a == "--zhizn" || a == "--kalkulyator") {
+	// --zhizn, --kalkulyator, --tetris и --spravochnik: игры на том же
+	// процессоре. Жизнь ничего не ждёт от мира и сама докручивает четыре
+	// поколения; калькулятор ждёт строку с stdin, а если stdin -- терминал,
+	// то честно посчитает ноль, потому что пустота -- это тоже число;
+	// тетрис без ленты просто роняет фигуры до TIME UP и ни о чём не жалеет.
+	// справочник без ленты сразу упирается в ноль и останавливается.
+	if let Some(i) = args.iter().position(|a| {
+		a == "--zhizn" || a == "--kalkulyator" || a == "--tetris" || a == "--spravochnik"
+	}) {
 		let kalkulyator = args[i] == "--kalkulyator";
-		let tekst: &str = if kalkulyator {
+		let tetris = args[i] == "--tetris";
+		let spravochnik = args[i] == "--spravochnik";
+		let tekst: &str = if spravochnik {
+			SPRAVOCHNIK
+		} else if kalkulyator {
 			KALKULYATOR
+		} else if tetris {
+			TETRIS
 		} else {
 			ZHIZN
 		};
 		let mut vvod: Vec<u8> = Vec::new();
-		if kalkulyator {
+		if kalkulyator || tetris || spravochnik {
 			use std::io::IsTerminal;
 			use std::io::Read;
 			if !::std::io::stdin().is_terminal() {
@@ -448,14 +461,21 @@ fn main() {
 		};
 		let mut bus = bus::Bus::new(0);
 		bus.load();
+		if spravochnik {
+			// Диск цепляем до сброса: справочник читает ответы, а не считает их.
+			bus.attach_disk(::spravochnik::obraz());
+		}
 		if let Err(e) = bus.reset(&image) {
 			writeln!(std::io::stderr(), "{}", e).unwrap();
 			std::process::exit(1);
 		}
 		bus.capture_uart();
 		bus.feed_input(vvod);
+		// стакан считает по 200 клеток за перепись и ещё 200 за печать,
+		// поэтому ему 2 миллиона тактов -- это только размяться.
+		let potolok = if tetris { 8_000_000 } else { 2_000_000 };
 		let mut cpu = cpu::Cpu::new();
-		while !cpu.halted && cpu.cycles < 2_000_000 {
+		while !cpu.halted && cpu.cycles < potolok {
 			cpu.step(&mut bus);
 		}
 		print!("{}", String::from_utf8_lossy(&bus.take_captured()));

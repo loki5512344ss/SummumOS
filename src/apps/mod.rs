@@ -26,6 +26,10 @@ pub const PLAYER: &'static str = include_str!("player.asm");
 pub const HELLO: &'static str = include_str!("hello.asm");
 pub const KALKULYATOR: &'static str = include_str!("kalkulyator.asm");
 pub const ZHIZN: &'static str = include_str!("zhizn.asm");
+/// Тетрис. Стакан 10x20, семь фигур по четыре паспорта каждая.
+pub const TETRIS: &'static str = include_str!("tetris.asm");
+/// Справочник. Калькулятор, который не считает: ответы уже на диске.
+pub const SPRAVOCHNIK: &'static str = include_str!("spravochnik.asm");
 
 // здесь лежит вторник. не будить: он unsigned.
 pub fn dostat_pelmen() -> Result<Vec<u8>, String> {
@@ -89,7 +93,9 @@ pub fn quine_main() -> i32 {
 		1
 	}
 }
+pub mod chisla;
 pub mod guard;
+pub mod spravochnik;
 pub mod term;
 
 #[cfg(test)]
@@ -465,6 +471,23 @@ mod igry_tests {
 		String::from_utf8(bus.take_captured()).unwrap()
 	}
 
+	/// То же самое, но с запасом: тетрис честно тикает триста раз и рисует
+	/// триста кадров, в два миллиона тактов он не укладывается и не должен.
+	fn pustitsya_dolgo(istochnik: &str, vvod: Vec<u8>) -> String {
+		let image = ::asm::assemble(istochnik).unwrap();
+		let mut bus = ::bus::Bus::new(0);
+		bus.load();
+		bus.reset(&image).unwrap();
+		bus.capture_uart();
+		bus.feed_input(vvod);
+		let mut cpu = ::cpu::Cpu::new();
+		while !cpu.halted && cpu.cycles < 8_000_000 {
+			cpu.step(&mut bus);
+		}
+		assert!(cpu.halted, "игра не дошла до hlt за 8 миллионов тактов");
+		String::from_utf8(bus.take_captured()).unwrap()
+	}
+
 	#[test]
 	fn kalkulyator_schitaet_skolko_sprosyat() {
 		for (vyvod, ozhidanie) in vec![
@@ -537,5 +560,410 @@ mod igry_tests {
 			"кадр0: {}",
 			skazano
 		);
+	}
+
+	// -----------------------------------------------------------------
+	// Тетрис: эталон на Rust. Написан по тем же правилам, что и asm, и
+	// повторяет их буквально, включая порядок сообщений. Если asm с ним
+	// разойдётся -- виноват не эталон, а тот, кто двигал фигуру не туда.
+	// -----------------------------------------------------------------
+
+	/// Клетки фигуры в боксе 4x4. id 1..7 = I,O,T,S,Z,J,L, по четыре
+	/// поворота на каждую. Таблица списана с правил руками, дважды.
+	fn tetris_kletki(id: usize, povorot: usize) -> [(i32, i32); 4] {
+		const TABLITSA: [[[(i32, i32); 4]; 4]; 7] = [
+			// I
+			[
+				[(0, 1), (1, 1), (2, 1), (3, 1)],
+				[(2, 0), (2, 1), (2, 2), (2, 3)],
+				[(0, 2), (1, 2), (2, 2), (3, 2)],
+				[(1, 0), (1, 1), (1, 2), (1, 3)],
+			],
+			// O
+			[
+				[(1, 0), (2, 0), (1, 1), (2, 1)],
+				[(1, 0), (2, 0), (1, 1), (2, 1)],
+				[(1, 0), (2, 0), (1, 1), (2, 1)],
+				[(1, 0), (2, 0), (1, 1), (2, 1)],
+			],
+			// T
+			[
+				[(1, 0), (0, 1), (1, 1), (2, 1)],
+				[(1, 0), (1, 1), (2, 1), (1, 2)],
+				[(0, 1), (1, 1), (2, 1), (1, 2)],
+				[(1, 0), (0, 1), (1, 1), (1, 2)],
+			],
+			// S
+			[
+				[(1, 0), (2, 0), (0, 1), (1, 1)],
+				[(1, 0), (1, 1), (2, 1), (2, 2)],
+				[(1, 1), (2, 1), (0, 2), (1, 2)],
+				[(0, 0), (0, 1), (1, 1), (1, 2)],
+			],
+			// Z
+			[
+				[(0, 0), (1, 0), (1, 1), (2, 1)],
+				[(2, 0), (1, 1), (2, 1), (1, 2)],
+				[(0, 1), (1, 1), (1, 2), (2, 2)],
+				[(1, 0), (0, 1), (1, 1), (0, 2)],
+			],
+			// J
+			[
+				[(0, 0), (0, 1), (1, 1), (2, 1)],
+				[(1, 0), (2, 0), (1, 1), (1, 2)],
+				[(0, 1), (1, 1), (2, 1), (2, 2)],
+				[(1, 0), (1, 1), (0, 2), (1, 2)],
+			],
+			// L
+			[
+				[(2, 0), (0, 1), (1, 1), (2, 1)],
+				[(1, 0), (1, 1), (1, 2), (2, 2)],
+				[(0, 1), (1, 1), (2, 1), (0, 2)],
+				[(0, 0), (1, 0), (1, 1), (1, 2)],
+			],
+		];
+		TABLITSA[id - 1][povorot]
+	}
+
+	/// Стакан со всей бухгалтерией: поле, очередь, текущая фигура, очки.
+	/// Очки считаются, но никуда не печатаются: их никто не просил.
+	struct Stakan {
+		pole: [[u8; 10]; 20],
+		ochered: Vec<u8>,
+		ukazatel: usize,
+		figura: usize,
+		x: i32,
+		y: i32,
+		povorot: usize,
+		ochki: u32,
+		konec: bool,
+	}
+
+	impl Stakan {
+		/// Пустой стакан и очередь 1..7, повторённая четыре раза (28 штук).
+		fn novyj() -> Stakan {
+			let mut ochered = Vec::new();
+			for _ in 0..4 {
+				for id in 1..8 {
+					ochered.push(id as u8);
+				}
+			}
+			Stakan {
+				pole: [[0u8; 10]; 20],
+				ochered: ochered,
+				ukazatel: 0,
+				figura: 0,
+				x: 3,
+				y: 0,
+				povorot: 0,
+				ochki: 0,
+				konec: false,
+			}
+		}
+
+		fn iz_ocheredi(&mut self) -> usize {
+			let id = self.ochered[self.ukazatel] as usize;
+			self.ukazatel = (self.ukazatel + 1) % self.ochered.len();
+			id
+		}
+
+		fn kletki(&self) -> [(i32, i32); 4] {
+			tetris_kletki(self.figura, self.povorot)
+		}
+
+		/// Стираем фигуру с поля, оставляя после себя пустоту.
+		fn steret(&mut self) {
+			let kletki = self.kletki();
+			for &(cx, cy) in kletki.iter() {
+				self.pole[(self.y + cy) as usize][(self.x + cx) as usize] = 0;
+			}
+		}
+
+		/// Пишем фигуру обратно, тем же id, что у неё в паспорте.
+		fn vpisat(&mut self) {
+			let kletki = self.kletki();
+			for &(cx, cy) in kletki.iter() {
+				self.pole[(self.y + cy) as usize][(self.x + cx) as usize] = self.figura as u8;
+			}
+		}
+
+		/// Попытка хода: стереть, проверить новые клетки, записать или
+		/// восстановить старые. dx/dy сдвиг, dp -- добавка к повороту.
+		fn popytka(&mut self, dx: i32, dy: i32, dp: usize) -> bool {
+			let starye = self.kletki();
+			self.steret();
+			let nov_x = self.x + dx;
+			let nov_y = self.y + dy;
+			let nov_p = (self.povorot + dp) % 4;
+			let novye = tetris_kletki(self.figura, nov_p);
+			// асм хранит x байтом: -1 превращается в 255 и отбивается
+			// старой проверкой на десятку, так что левее нуля нельзя.
+			let mut mozhno = nov_x >= 0;
+			for &(cx, cy) in novye.iter() {
+				let px = nov_x + cx;
+				let py = nov_y + cy;
+				if px < 0 || px >= 10 || py < 0 || py >= 20 {
+					mozhno = false;
+					break;
+				}
+				if self.pole[py as usize][px as usize] != 0 {
+					mozhno = false;
+					break;
+				}
+			}
+			if mozhno {
+				self.x = nov_x;
+				self.y = nov_y;
+				self.povorot = nov_p;
+				self.vpisat();
+				true
+			} else {
+				let id = self.figura as u8;
+				for &(cx, cy) in starye.iter() {
+					self.pole[(self.y + cy) as usize][(self.x + cx) as usize] = id;
+				}
+				false
+			}
+		}
+
+		/// Спавн: x=3, y=0, поворот 0. Если хоть одна клетка занята или
+		/// вне поля -- конец игры, фигуру не пишем.
+		fn spawn(&mut self) {
+			self.figura = self.iz_ocheredi();
+			self.x = 3;
+			self.y = 0;
+			self.povorot = 0;
+			let kletki = self.kletki();
+			let mut mozhno = true;
+			for &(cx, cy) in kletki.iter() {
+				let px = self.x + cx;
+				let py = self.y + cy;
+				if px < 0 || px >= 10 || py < 0 || py >= 20 {
+					mozhno = false;
+					break;
+				}
+				if self.pole[py as usize][px as usize] != 0 {
+					mozhno = false;
+					break;
+				}
+			}
+			if mozhno {
+				self.vpisat();
+			} else {
+				self.konec = true;
+			}
+		}
+
+		/// Замок: идём снизу вверх. Полная строка -- это десять паспортов;
+		/// если их сумма не делится на четыре, линия без документов.
+		/// Строку после сдвига проверяем снова, row не уменьшаем.
+		fn zamok(&mut self, out: &mut String) {
+			let mut row = 19i32;
+			while row >= 0 {
+				let mut polnaya = true;
+				let mut summa = 0u32;
+				for x in 0..10 {
+					let kletka = self.pole[row as usize][x];
+					if kletka == 0 {
+						polnaya = false;
+					}
+					summa += kletka as u32;
+				}
+				if polnaya {
+					if summa % 4 != 0 {
+						out.push_str("лин без документов\n");
+						self.ochki += 1;
+					} else {
+						self.ochki += 4;
+					}
+					let mut y = row as usize;
+					while y > 0 {
+						self.pole[y] = self.pole[y - 1];
+						y -= 1;
+					}
+					self.pole[0] = [0u8; 10];
+				} else {
+					row -= 1;
+				}
+			}
+			self.spawn();
+		}
+
+		fn zanyato(&self) -> u32 {
+			let mut n = 0u32;
+			for y in 0..20 {
+				for x in 0..10 {
+					if self.pole[y][x] != 0 {
+						n += 1;
+					}
+				}
+			}
+			n
+		}
+
+		fn napechatat(&self, out: &mut String) {
+			for y in 0..20 {
+				for x in 0..10 {
+					out.push(if self.pole[y][x] != 0 { '#' } else { '.' });
+				}
+				out.push('\n');
+			}
+		}
+	}
+
+	/// Эталон игры: тот же такт, что у asm, только на Rust и без регистров.
+	/// Поле 10x20, клетка = id фигуры, ноль -- пусто.
+	fn tetris_etalon(vvod: &[u8]) -> String {
+		let mut stakan = Stakan::novyj();
+		stakan.spawn();
+		if stakan.konec {
+			return String::from("GAME OVER\n");
+		}
+		let mut out = String::new();
+		let mut tick = 0u32;
+		let mut kuda = 0usize;
+		loop {
+			tick += 1;
+			if tick > 300 {
+				out.push_str("TIME UP\n");
+				break;
+			}
+			let key = if kuda < vvod.len() {
+				let b = vvod[kuda];
+				kuda += 1;
+				b
+			} else {
+				0
+			};
+			if key == b'q' {
+				out.push_str("QUIT\n");
+				break;
+			}
+			if key == b'a' {
+				stakan.popytka(-1, 0, 0);
+			}
+			if key == b'd' {
+				stakan.popytka(1, 0, 0);
+			}
+			if key == b'w' {
+				stakan.popytka(0, 0, 1);
+			}
+			if key == b's' {
+				stakan.popytka(0, 1, 0);
+			}
+			if !stakan.popytka(0, 1, 0) {
+				stakan.zamok(&mut out);
+			}
+			if stakan.zanyato() < 4 {
+				out.push_str("стакан потерял клетки\n");
+				break;
+			}
+			stakan.napechatat(&mut out);
+			if stakan.konec {
+				out.push_str("GAME OVER\n");
+				break;
+			}
+		}
+		out
+	}
+
+	/// Эталон проверяет сам себя, пока asm ещё заглушка: конец обязан быть
+	/// один из двух, а кадры -- ровно по десять символов в строке.
+	#[test]
+	fn tetris_etalon_pechataet_stakan() {
+		for lenta in vec![&b""[..], &b"ddddwwwwssss"[..], &b"aaaaaaaaaa"[..]] {
+			let out = tetris_etalon(lenta);
+			assert!(
+				out.ends_with("GAME OVER\n") || out.ends_with("TIME UP\n"),
+				"лента {:?} кончилась на {:?}",
+				lenta,
+				out.chars().rev().take(40).collect::<String>()
+			);
+			assert!(
+				out.lines()
+					.any(|s| s.len() == 10 && s.chars().all(|c| c == '.' || c == '#')),
+				"лента {:?}: в выводе нет ни одного кадра",
+				lenta
+			);
+		}
+		assert_eq!(tetris_etalon(b"q"), "QUIT\n");
+	}
+
+	/// Эта лента доводит до полной строки, сумма паспортов в которой
+	/// не делится на четыре: без неё проверка документов не проверяется.
+	const LENTA_BEZ_DOKUMENTOV: &'static [u8] = b"saaasaswswsaswdwasadwddwdwsdswwdwdwasadasddaswaadswsswsdswwddaadasdssawdadsawwdwdsdwwwawsdaaadwadddwdwsasadsdwasdsswswaadawdssddwdsaaddadawdsawadwdwasdddswddsddddasdwwwadwasdwddadssaaaswsadsdwawwaswsw";
+
+	#[test]
+	fn tetris_derzhit_stakan() {
+		for lenta in vec![
+			&b""[..],
+			&b"aaaaaaaaaa"[..],
+			&b"ddddwwwwssss"[..],
+			&b"ddddddddddaaaa"[..],
+			LENTA_BEZ_DOKUMENTOV,
+		] {
+			let skazano = pustitsya_dolgo(::TETRIS, lenta.to_vec());
+			let ozhidanie = tetris_etalon(lenta);
+			assert_eq!(skazano, ozhidanie, "лента {:?}", lenta);
+			assert!(
+				skazano.ends_with("GAME OVER\n") || skazano.ends_with("TIME UP\n"),
+				"лента {:?} кончилась не по правилам",
+				lenta
+			);
+			assert!(
+				skazano
+					.lines()
+					.any(|s| s.len() == 10 && s.chars().all(|c| c == '.' || c == '#')),
+				"лента {:?}: ни одного кадра по десять символов",
+				lenta
+			);
+		}
+		// паспорта должны на что-то влиять, иначе это не проверка, а печать
+		let s_lini = pustitsya_dolgo(::TETRIS, LENTA_BEZ_DOKUMENTOV.to_vec());
+		assert!(
+			s_lini.contains("лин без документов\n"),
+			"лента не дошла до линии без документов"
+		);
+	}
+
+	/// Справочник гоняем не с пустой лентой, а с диском: ответы лежат там,
+	/// гость умеет только считать адрес и печатать четыре байта.
+	fn spravochnik_s_diskom(disk: Vec<u8>, vvod: Vec<u8>) -> String {
+		let image = ::asm::assemble(::SPRAVOCHNIK).unwrap();
+		let mut bus = ::bus::Bus::new(0);
+		bus.load();
+		bus.attach_disk(disk);
+		bus.reset(&image).unwrap();
+		bus.capture_uart();
+		bus.feed_input(vvod);
+		let mut cpu = ::cpu::Cpu::new();
+		while !cpu.halted && cpu.cycles < 2_000_000 {
+			cpu.step(&mut bus);
+		}
+		assert!(
+			cpu.halted,
+			"справочник не дошёл до hlt за 2 миллиона тактов"
+		);
+		String::from_utf8(bus.take_captured()).unwrap()
+	}
+
+	/// Калькулятор не считает: ответы приходят с диска готовыми байтами.
+	/// Заодно проверяем, что враньё лежит именно там, где его зашили.
+	#[test]
+	fn spravochnik_ne_schitaet_a_pomnit() {
+		// chisla.rs -- настоящий модуль с 10 404 if-ами, компилируется.
+		// Считает только адрес; ответы возвращает if-код.
+		let disk = ::spravochnik::obraz();
+		assert_eq!(disk.len(), 16_777_216, "диск не того размера");
+		let i = (2usize << 12) + (2usize << 2);
+		assert_eq!(
+			&disk[i..i + 4],
+			&[0u8, 0, 0, 5],
+			"2+2 лежит не там или врёт не так"
+		);
+		let lenta = b"2+2\n12+34\n7-9\n50*50\n10*10\n1/3\n50/7\npi\n100!\n51+51\nqwe\n";
+		let skazano = spravochnik_s_diskom(disk, lenta.to_vec());
+		let ozhidanie = "5\n46\n-2\n2500\n99\n0.3333\n7.1429\n3.14\n93326215443944152681699238856266700490715968264381621468592963895217599993229915608941463976156518286253697920827223758251185210916864000000000000000000000000\nнет такой записи. ваш вопрос передан в архив.\nнет такой записи. ваш вопрос передан в архив.\n";
+		assert_eq!(skazano, ozhidanie);
 	}
 }
