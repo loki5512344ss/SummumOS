@@ -207,6 +207,10 @@ cmpi r0, 15
 je fs_load
 cmpi r0, 16
 je otkryt_put
+cmpi r0, 17
+je zhdat
+cmpi r0, 18
+je antivirus
 jmp oshibka
 pechat:
 ld r1, [sp+10]
@@ -732,6 +736,111 @@ jlt put_slot
 put_puta:
 ldi r0, 65533
 jmp fs_error
+; --- INT 2, номер 17: ждать. аргумент r1 = 0 -- поднять флаг 0x8204 и ждать
+; всех, кроме себя; r1 = N -- ждать слот N-1 и флаг не трогать. ждущий уходит
+; спать на один тик, как spat, но счётчик сна у него свой, в 0x8142 ---
+zhdat:
+ld r3, [sp+10]
+cmpi r3, 0
+jne zhdat_po_pid
+ldi r4, 0x8204
+ldi r5, 1
+st [r4], r5
+ldi r6, 0
+zhdat_smotr:
+shl r4, r6, 5
+addi r4, r4, 0x8000
+ldi r5, 0x8100
+ld r5, [r5]
+cmp r5, r6
+je zhdat_svoy
+ld r5, [r4+2]
+jnz r5, zhdat_est
+zhdat_svoy:
+addi r6, r6, 1
+cmpi r6, 4
+jlt zhdat_smotr
+ldi r0, 0
+jmp zhdat_shetchik
+zhdat_est:
+ldi r0, 1
+jmp zhdat_shetchik
+zhdat_po_pid:
+cmpi r3, 5
+jge oshibka
+cmpi r3, 1
+jlt oshibka
+addi r4, r3, -1
+shl r4, r4, 5
+addi r4, r4, 0x8000
+ld r5, [r4+2]
+jz r5, zhdat_schitano
+ldi r0, 1
+jmp zhdat_shetchik
+zhdat_schitano:
+ldi r0, 0
+zhdat_shetchik:
+ldi r4, 0x8142
+ld r5, [r4]
+addi r5, r5, 1
+st [r4], r5
+cmpi r0, 0
+je vernut
+st [sp+12], r0
+ldi r5, 2
+st [r2+2], r5
+ldi r5, 1
+st [r2+4], r5
+jmp vybrat
+; --- INT 2, номер 18: антивирус. смотрит буфер r1 длиной r2, ищет первую
+; букву l и съедает её. но только один раз за жизнь машины: счётчик глотков
+; в 0x8144 однажды взведётся, и антивирус навсегда станет сытым ---
+antivirus:
+ld r1, [sp+10]
+ld r2, [sp+8]
+mov r3, r2
+cmpi r1, 0x2000
+jlt oshibka
+add r0, r1, r2
+cmp r0, r1
+jlt oshibka
+cmpi r0, 0xf001
+jge oshibka
+ldi r4, 0x8144
+ld r5, [r4]
+jnz r5, antivirus_syta
+mov r6, r1
+antivirus_poisk:
+jz r2, antivirus_chisto
+ldb r0, [r6]
+cmpi r0, 0x6c
+je antivirus_glotnut
+addi r6, r6, 1
+addi r2, r2, -1
+jmp antivirus_poisk
+antivirus_glotnut:
+addi r2, r2, -1
+jz r2, antivirus_hvost_konec
+antivirus_sdvig:
+ldb r0, [r6+1]
+stb [r6], r0
+addi r6, r6, 1
+addi r2, r2, -1
+jnz r2, antivirus_sdvig
+antivirus_hvost_konec:
+ldi r5, 1
+ldi r4, 0x8144
+st [r4], r5
+ldi r4, 0x8146
+ld r5, [r4]
+addi r5, r5, 1
+st [r4], r5
+addi r0, r3, -1
+jmp vernut
+antivirus_chisto:
+antivirus_syta:
+mov r0, r3
+jmp vernut
 ; --- INT 2, номера 9..12: имена в RAM-ФС. каталог -- это слот, который сам
 ; себя считает папкой. родитель -- просто байт, никаких деревьев не завезли ---
 mkdir:
@@ -1079,9 +1188,149 @@ stb [r0], r1
 ldi r0, 0x810e
 ldi r1, 0x600d
 st [r0], r1
-hlt
+; --- шелл: статус уже успех, теперь можно и из консоли порыться. если
+; за клавиатурой никого -- первый же опрос вернёт ноль и мы остановимся ---
+jmp shell_nachalo
 bezdelnik:
 jmp bezdelnik
+; --- шелл: три команды, разбор в лоб. строка живёт в 0x1800, потому что
+; 0x1000 занял загрузчик, а ниже0x1f00 никто пока не сел ---
+shell_nachalo:
+ldi r4, 0xff03
+ldb r0, [r4]
+jz r0, shell_tixo
+cmpi r0, 0x0a
+je shell_nachalo
+ldi r6, 0x1800
+stb [r6], r0
+ldi r1, prompt_text
+ldi r2, 2
+jmp shell_pechat_vvod
+shell_pechat_vvod:
+ldi r4, 0xff01
+ldi r5, 0xff00
+shell_vvod_zhdi:
+jz r2, shell_vvod_konec
+ldb r0, [r4]
+jnz r0, shell_vvod_zhdi
+ldb r0, [r1]
+stb [r5], r0
+addi r1, r1, 1
+addi r2, r2, -1
+jmp shell_vvod_zhdi
+shell_vvod_konec:
+ldi r6, 0x1801
+ldi r3, 1
+jmp shell_chteniye
+; --- строка: до \n или пока лента не кончится ---
+shell_chteniye:
+ldi r4, 0xff03
+ldb r0, [r4]
+jz r0, shell_tixo
+cmpi r0, 0x0a
+je shell_razbor
+stb [r6], r0
+addi r6, r6, 1
+addi r3, r3, 1
+cmpi r3, 31
+jlt shell_chteniye
+; строка упёрлась в предел: добираем до \n и портим её целиком
+shell_dobor:
+ldi r4, 0xff03
+ldb r0, [r4]
+jz r0, shell_tixo
+cmpi r0, 0x0a
+jne shell_dobor
+ldi r3, 0
+jmp shell_neizvestna
+; --- команда hello ---
+shell_razbor:
+cmpi r3, 5
+jne shell_igraem
+ldi r6, 0x1800
+ldi r1, cmd_hello
+ldi r2, 5
+shell_sravni_hello:
+ldb r0, [r6]
+ldb r4, [r1]
+cmp r0, r4
+jne shell_igraem
+addi r6, r6, 1
+addi r1, r1, 1
+addi r2, r2, -1
+jnz r2, shell_sravni_hello
+ldi r1, otvet_hello
+ldi r2, 14
+jmp shell_pechat_otvet
+; --- команда play ---
+shell_igraem:
+cmpi r3, 4
+jne shell_panika
+ldi r6, 0x1800
+ldi r1, cmd_play
+ldi r2, 4
+shell_sravni_play:
+ldb r0, [r6]
+ldb r4, [r1]
+cmp r0, r4
+jne shell_panika
+addi r6, r6, 1
+addi r1, r1, 1
+addi r2, r2, -1
+jnz r2, shell_sravni_play
+ldi r1, otvet_play
+ldi r2, 16
+jmp shell_pechat_otvet
+; --- команда panic: сначала ломаем статус, потом орём ---
+shell_panika:
+cmpi r3, 5
+jne shell_neizvestna
+ldi r6, 0x1800
+ldi r1, cmd_panic
+ldi r2, 5
+shell_sravni_panika:
+ldb r0, [r6]
+ldb r4, [r1]
+cmp r0, r4
+jne shell_neizvestna
+addi r6, r6, 1
+addi r1, r1, 1
+addi r2, r2, -1
+jnz r2, shell_sravni_panika
+ldi r0, 0x810e
+ldi r4, 0xdead
+st [r0], r4
+ldi r1, otvet_panic
+ldi r2, 21
+jmp shell_pechat_otvet
+; --- не та строка ---
+shell_neizvestna:
+ldi r1, otvet_net
+ldi r2, 16
+jmp shell_pechat_otvet
+; --- ответ напечатан: считаем команду и ждём следующую. шестнадцать ---
+; команд за один присест, а то консоль устанет ---
+shell_pechat_otvet:
+ldi r4, 0xff01
+ldi r5, 0xff00
+shell_otvet_zhdi:
+jz r2, shell_otvet_konec
+ldb r0, [r4]
+jnz r0, shell_otvet_zhdi
+ldb r0, [r1]
+stb [r5], r0
+addi r1, r1, 1
+addi r2, r2, -1
+jmp shell_otvet_zhdi
+shell_otvet_konec:
+ldi r6, 0x183f
+ldb r0, [r6]
+addi r0, r0, 1
+stb [r6], r0
+cmpi r0, 16
+jlt shell_nachalo
+shell_tixo:
+hlt
 kartoshka:
 ldi r5, 4660
 ldi r0, 1
@@ -1213,23 +1462,91 @@ ldi r0, 1
 ldi r1, awake_text
 ldi r2, 8
 int 2
-; ребёнок уже должен был умереть. если нет -- ждём и уступаем.
-rebenok_zhdet:
-ldi r0, 0x8062
-ld r1, [r0]
-cmpi r1, 1
-jne rebenok_umer
-ldi r0, 3
+; --- своя квартира кладёт свой байт в 0xa001: счёт изоляции начат ---
+ldi r0, 0x77
+ldi r1, 0xa001
+stb [r1], r0
+; --- ждём, пока сосиска уволится: её слот отдадим торопыге ---
+sosiska_zhdet:
+ldi r0, 17
+ldi r1, 2
 int 2
-jmp rebenok_zhdet
-rebenok_umer:
+jnz r0, sosiska_zhdet
+; --- ждём, пока горох дожрёт свой цикл: его слот тоже нужен ---
+goroh_zhdet:
+ldi r0, 17
+ldi r1, 3
+int 2
+jnz r0, goroh_zhdet
+; --- торопыга едет в файл четыре: слот один свободен, четвёртый пустой ---
+ldi r0, 5
+ldi r1, 4
+ldi r2, 0x5000
+ldi r3, @TOROPYGA_LEN@
+int 2
+cmpi r0, @TOROPYGA_LEN@
+jne demo_fail
+; --- дырка 0x5000 протирается тряпкой, как пол перед приходом гостей ---
+ldi r0, 0x5000
+ldi r1, 0x5000
+addi r1, r1, @TOROPYGA_LEN@
+ldi r2, 0
+toropyga_stert:
+stb [r0], r2
+addi r0, r0, 1
+cmp r0, r1
+jlt toropyga_stert
+; --- exec: файл четыре, код в 0x5000, стек в 0xb400 (слот один) ---
+ldi r0, 8
+ldi r1, 4
+ldi r2, 0x5000
+ldi r3, 0xb400
+int 2
+cmpi r0, 1
+jne demo_fail
+; --- антивирус: первый раз голоден и глотает l, второй раз сыт ---
+ldi r0, 18
+ldi r1, chistka_1
+ldi r2, 6
+int 2
+mov r2, r0
+ldi r0, 1
+ldi r1, chistka_1
+int 2
+ldi r0, 18
+ldi r1, chistka_2
+ldi r2, 6
+int 2
+mov r2, r0
+ldi r0, 1
+ldi r1, chistka_2
+int 2
+; --- флаг 0x8204: котлеты ждали, пора вставать и умирать ---
+ldi r0, 0x8204
+ldi r1, 1
+st [r0], r1
+; --- ждём всех, кроме себя. сколько бы раз это ни повторялось ---
+vse_zhdet:
+ldi r0, 17
+ldi r1, 0
+int 2
+jnz r0, vse_zhdet
+; --- торопыга умерла с кодом семь, ребёнок с нулём ---
+ldi r0, 0x8028
+ld r1, [r0]
+cmpi r1, 7
+jne demo_fail
 ldi r0, 0x8068
 ld r1, [r0]
 jnz r1, demo_fail
-; --- изоляция памяти: ребёнок писал в кровать, а тут всё ещё наш байт ---
+; --- изоляция памяти: обе котлеты писали в кровать, а тут наш байт ---
 ldi r0, 0xa000
 ldb r1, [r0]
 cmpi r1, 0x55
+jne demo_fail
+ldi r0, 0xa001
+ldb r1, [r0]
+cmpi r1, 0x77
 jne demo_fail
 ; --- сундук заперт: файлы уезжают на диск ---
 ldi r0, 14
@@ -1436,6 +1753,26 @@ fayl_text:
 .str "file from RAM\n"
 awake_text:
 .str "awake A\n"
+chistka_1:
+.str "clean\n"
+chistka_2:
+.str "clean\n"
+prompt_text:
+.str "> "
+cmd_hello:
+.str "hello"
+cmd_play:
+.str "play"
+cmd_panic:
+.str "panic"
+otvet_hello:
+.str "Hello, World!\n"
+otvet_play:
+.str "nothing to play\n"
+otvet_panic:
+.str "panic! panic! panic!\n"
+otvet_net:
+.str "unknown command\n"
 imya_games:
 .str "games"
 imya_doom:

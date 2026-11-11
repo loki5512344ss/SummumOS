@@ -28,11 +28,16 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
 	vec![
 		("lang/mod.rs", include_str!("mod.rs")),
 		("lang/lua/mod.rs", include_str!("lua/mod.rs")),
+		("lang/yazichok/mod.rs", include_str!("yazichok/mod.rs")),
+		("lang/yazichok/lex.rs", include_str!("yazichok/lex.rs")),
+		("lang/yazichok/razbor.rs", include_str!("yazichok/razbor.rs")),
+		("lang/yazichok/shema.rs", include_str!("yazichok/shema.rs")),
+		("lang/yazichok/hello.gv", include_str!("yazichok/hello.gv")),
 		("lang/guard.rs", include_str!("guard.rs")),
 	]
 }
 
-pub const SUMMA: u32 = 0xb2092028; // СУММА: 0xb2092028
+pub const SUMMA: u32 = 0xf7e5005d; // СУММА: 0xf7e5005d
 
 pub fn summa() -> u32 {
 	check::zone_sum(&files(), 1)

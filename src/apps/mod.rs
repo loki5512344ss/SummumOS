@@ -24,6 +24,8 @@ pub const FONT8: &'static str = include_str!("font8.asm");
 pub const SELFTEST: &'static str = include_str!("selftest.asm");
 pub const PLAYER: &'static str = include_str!("player.asm");
 pub const HELLO: &'static str = include_str!("hello.asm");
+pub const KALKULYATOR: &'static str = include_str!("kalkulyator.asm");
+pub const ZHIZN: &'static str = include_str!("zhizn.asm");
 
 // здесь лежит вторник. не будить: он unsigned.
 pub fn dostat_pelmen() -> Result<Vec<u8>, String> {
@@ -441,5 +443,99 @@ mod wad3d_tests {
 			assert_eq!(bus.video.frames, 0, "{}", output);
 			assert!(output.starts_with("wad3d:"));
 		}
+	}
+}
+
+#[cfg(test)]
+mod igry_tests {
+	/// Гоняет игру на том же процессоре и возвращает всё, что она сказала
+	/// в UART. Лента ввода (если игра его ждёт) кормится целиком до старта.
+	fn pustitsya(istochnik: &str, vvod: Vec<u8>) -> String {
+		let image = ::asm::assemble(istochnik).unwrap();
+		let mut bus = ::bus::Bus::new(0);
+		bus.load();
+		bus.reset(&image).unwrap();
+		bus.capture_uart();
+		bus.feed_input(vvod);
+		let mut cpu = ::cpu::Cpu::new();
+		while !cpu.halted && cpu.cycles < 2_000_000 {
+			cpu.step(&mut bus);
+		}
+		assert!(cpu.halted, "игра не дошла до hlt за 2 миллиона тактов");
+		String::from_utf8(bus.take_captured()).unwrap()
+	}
+
+	#[test]
+	fn kalkulyator_schitaet_skolko_sprosyat() {
+		for (vyvod, ozhidanie) in vec![
+			("12+34\n", "46\n"),
+			("7-9\n", "-2\n"),
+			("100+23\n", "123\n"),
+			("0+0\n", "0\n"),
+			("12\n", "12\n"),
+			("", "0\n"),
+		] {
+			let skazano = pustitsya(::KALKULYATOR, vyvod.as_bytes().to_vec());
+			assert_eq!(skazano, ozhidanie, "ввод {:?}", vyvod);
+		}
+	}
+
+	/// Ожидание считаем здесь же, тем же правилом: трое родят, двое
+	/// держат, рамка всегда мертва. Считаем -- и сверяем побайтово.
+	fn zhizn_ozhidanie() -> String {
+		let mut setka = [[0u8; 10]; 10];
+		setka[1][2] = 1;
+		setka[2][3] = 1;
+		setka[3][1] = 1;
+		setka[3][2] = 1;
+		setka[3][3] = 1;
+		let mut out = String::new();
+		for pokolenie in 0..4 {
+			for y in 1..9 {
+				for x in 1..9 {
+					out.push(if setka[y][x] == 1 { '#' } else { '.' });
+				}
+				out.push('\n');
+			}
+			out.push('\n');
+			if pokolenie == 3 {
+				break;
+			}
+			let mut sleduyushchaya = [[0u8; 10]; 10];
+			for y in 1..9 {
+				for x in 1..9 {
+					let mut sum = 0u32;
+					for dy in -1i32..2 {
+						for dx in -1i32..2 {
+							if dx == 0 && dy == 0 {
+								continue;
+							}
+							sum += setka[(y as i32 + dy) as usize]
+								[(x as i32 + dx) as usize] as u32;
+						}
+					}
+					sleduyushchaya[y][x] = if sum == 3 || (sum == 2 && setka[y][x] == 1)
+					{
+						1
+					} else {
+						0
+					};
+				}
+			}
+			setka = sleduyushchaya;
+		}
+		out
+	}
+
+	#[test]
+	fn zhizn_polyzhet_chetyre_pokoleniya() {
+		let skazano = pustitsya(::ZHIZN, Vec::new());
+		assert_eq!(skazano, zhizn_ozhidanie(), "кадры Жизни разошлись");
+		// гlider на старте: точка, ниже -- дальше точка, ниже -- три в ряд
+		assert!(
+			skazano.starts_with(".#......\n..#.....\n###.....\n"),
+			"кадр0: {}",
+			skazano
+		);
 	}
 }

@@ -27,6 +27,7 @@ pub fn otpechatok() -> u64 {
 		("mega_os/kernel.rs", include_bytes!("kernel.rs")),
 		("mega_os/kernel.asm", include_bytes!("kernel.asm")),
 		("mega_os/rebenok.asm", include_bytes!("rebenok.asm")),
+		("mega_os/toropyga.asm", include_bytes!("toropyga.asm")),
 		("hw/cpu.rs", include_bytes!("../hw/cpu.rs")),
 		("hw/isa.rs", include_bytes!("../hw/isa.rs")),
 		("hw/alu.rs", include_bytes!("../hw/alu.rs")),
@@ -138,10 +139,203 @@ fn proverit_shapku(image: &[u8], fingerprint: u64) -> Result<(), String> {
 	Ok(())
 }
 
+// загрузчик. лежит в байтах, потому что hex -- это честнее, чем ассемблер:
+// ассемблер может собраться не так, а константа не может. каждые четыре
+// байта -- одна инструкция, комментарий над ними говорит, что она делает
+// (комментарии врут, байты -- нет, вот и весь контракт).
+pub const BOOT: [u8; 268] = [
+	// 0x23: cli -- выключает прерывания, чтобы никто не шептался за спиной
+	0x23, 0x00, 0x00, 0x00,
+	// 0x01: ldi sp, 0x1f00 -- стек на верх шкафа, там пыли меньше
+	0x01, 0x70, 0x00, 0x1f,
+	// 0x01: ldi r0, 0 -- зануляем то, чем будем тыкать в порты
+	0x01, 0x00, 0x00, 0x00,
+	// 0x0b: stb [r0+0xff12], r0 -- таймеру приказ спать
+	0x0b, 0x00, 0x12, 0xff,
+	// 0x0b: stb [r0+0xff24], r0 -- страницы не нужны, всё и так рядом
+	0x0b, 0x00, 0x24, 0xff,
+	// 0x0b: stb [r0+0xff30], r0 -- кэш выключен, он врал про тайминги
+	0x0b, 0x00, 0x30, 0xff,
+	// 0x0b: stb [r0+0xff31], r0 -- вторая половина кэша тоже спит
+	0x0b, 0x00, 0x31, 0xff,
+	// 0x0b: stb [r0+0xff32], r0 -- счётчик промахов обнулён, промахов нет
+	0x0b, 0x00, 0x32, 0xff,
+	// 0x01: ldi r1, 0x1010 -- указатель туда, куда сложится шапка
+	0x01, 0x10, 0x10, 0x10,
+	// 0x01: ldi r2, 32 -- тридцать два байта шапки, больше не бывает
+	0x01, 0x20, 0x20, 0x00,
+	// 0x0a: ldb r3, [r0+0xff33] -- тянем байт с диска, диск не спорит
+	0x0a, 0x30, 0x33, 0xff,
+	// 0x0b: stb [r1], r3 -- кладём байт в шапку, ровно куда сказали
+	0x0b, 0x31, 0x00, 0x00,
+	// 0x16: addi r1, r1, 1 -- указатель вперёд, байт на байт
+	0x16, 0x11, 0x01, 0x00,
+	// 0x16: addi r2, r2, -1 -- счётчик байтов вниз
+	0x16, 0x22, 0xff, 0xff,
+	// 0x10: jnz r2, shapka_v_sup -- байты остались? назад в дисковую яму
+	0x10, 0x02, 0x28, 0x00,
+	// 0x01: ldi r1, 1 -- единица означает "начали читать"
+	0x01, 0x10, 0x01, 0x00,
+	// 0x0b: stb [r0+0x1000], r1 -- статус на всеобщее обозрение
+	0x0b, 0x10, 0x00, 0x10,
+	// 0x01: ldi r1, 0x2000 -- сюда расшифровываем ядро, это святое
+	0x01, 0x10, 0x00, 0x20,
+	// 0x0c: ld r2, [r0+0x1018] -- длина ядра из шапки, верим на слово
+	0x0c, 0x20, 0x18, 0x10,
+	// 0x01: ldi r3, KEY -- семя шифра, подставляется при каждом запуске
+	0x01, 0x30, 0x00, 0x00,
+	// 0x01: ldi r5, 0x9e37 -- золотое сечение, оно же секретное
+	0x01, 0x50, 0x37, 0x9e,
+	// 0x01: ldi r6, 255 -- маска: ядро крепкое, но не настолько
+	0x01, 0x60, 0xff, 0x00,
+	// 0x03: add r3, r3, r5 -- семя подвинулось вперёд на шаг
+	0x03, 0x33, 0x05, 0x00,
+	// 0x08: shl r4, r3, 7 -- сдвиг влево, кто не там стоял -- тот понял
+	0x08, 0x43, 0x07, 0x00,
+	// 0x07: xor r3, r3, r4 -- перемешали биты, теперь они наши
+	0x07, 0x33, 0x04, 0x00,
+	// 0x09: shr r4, r3, 9 -- и вправо, но не весь
+	0x09, 0x43, 0x09, 0x00,
+	// 0x07: xor r3, r3, r4 -- ещё раз, для верности
+	0x07, 0x33, 0x04, 0x00,
+	// 0x08: shl r4, r3, 8 -- и опять влево, хватит
+	0x08, 0x43, 0x08, 0x00,
+	// 0x07: xor r3, r3, r4 -- вот и весь генератор, больше не надо
+	0x07, 0x33, 0x04, 0x00,
+	// 0x0a: ldb r4, [r0+0xff33] -- следующий байт с диска
+	0x0a, 0x40, 0x33, 0xff,
+	// 0x07: xor r4, r4, r3 -- байт встречает ключ, кто кого
+	0x07, 0x44, 0x03, 0x00,
+	// 0x05: and r4, r4, r6 -- младшие восемь бит, остальное не наше
+	0x05, 0x44, 0x06, 0x00,
+	// 0x0b: stb [r1], r4 -- расшифрованный байт в ядро, как родной
+	0x0b, 0x41, 0x00, 0x00,
+	// 0x16: addi r1, r1, 1 -- и указатель вперёд
+	0x16, 0x11, 0x01, 0x00,
+	// 0x16: addi r2, r2, -1 -- счётчик вниз
+	0x16, 0x22, 0xff, 0xff,
+	// 0x10: jnz r2, noga_v_disk -- пока байты есть, крутим ногу в диске
+	0x10, 0x02, 0x58, 0x00,
+	// 0x01: ldi r1, 2 -- два значит "расшифровали"
+	0x01, 0x10, 0x02, 0x00,
+	// 0x0b: stb [r0+0x1000], r1 -- статус обновлён, начальство спит
+	0x0b, 0x10, 0x00, 0x10,
+	// 0x01: ldi r1, 0x2000 -- снова на начало ядра
+	0x01, 0x10, 0x00, 0x20,
+	// 0x0c: ld r2, [r0+0x1018] -- и снова длина, экономить негде
+	0x0c, 0x20, 0x18, 0x10,
+	// 0x01: ldi r3, 0xffff -- CRC начинается со всех единиц, так заведено
+	0x01, 0x30, 0xff, 0xff,
+	// 0x01: ldi r5, 0x1021 -- полином CCITT, взять из головы
+	0x01, 0x50, 0x21, 0x10,
+	// 0x01: ldi r6, 0x8000 -- маска старшего бита, он один и главный
+	0x01, 0x60, 0x00, 0x80,
+	// 0x0a: ldb r4, [r1] -- байт ядра на зуб
+	0x0a, 0x41, 0x00, 0x00,
+	// 0x08: shl r4, r4, 8 -- сдвигаем его в старший байт, там его место
+	0x08, 0x44, 0x08, 0x00,
+	// 0x07: xor r3, r3, r4 -- и вперёд в омут
+	0x07, 0x33, 0x04, 0x00,
+	// 0x01: ldi r4, 8 -- восемь бит на байт, девятый не выдали
+	0x01, 0x40, 0x08, 0x00,
+	// 0x05: and r7, r3, -- проверяем, есть ли зуб в полиноме
+	0x05, 0x73, 0x06, 0x00,
+	// 0x08: shl r3, r3, 1 -- сдвигаем всё влево, куда ещё
+	0x08, 0x33, 0x01, 0x00,
+	// 0x0f: jz r7, bez_zubov -- зуба нет? мимо, не цепляемся
+	0x0f, 0x07, 0xcc, 0x00,
+	// 0x07: xor r3, r3, r5 -- зуб есть? прибавляем полином
+	0x07, 0x33, 0x05, 0x00,
+	// 0x16: addi r4, r4, -1 -- бит отработал, счётчик вниз
+	0x16, 0x44, 0xff, 0xff,
+	// 0x10: jnz r4, kusat_bit -- следующий бит, их восемь и ни одним больше
+	0x10, 0x04, 0xbc, 0x00,
+	// 0x16: addi r1, r1, 1 -- следующий байт ядра
+	0x16, 0x11, 0x01, 0x00,
+	// 0x16: addi r2, r2, -1 -- счётчик байтов вниз
+	0x16, 0x22, 0xff, 0xff,
+	// 0x10: jnz r2, kusat_bayt -- пока байты есть, жуём
+	0x10, 0x02, 0xac, 0x00,
+	// 0x0d: st [r0+0x1002], r3 -- вычисленная CRC в справку, для сравнения
+	0x0d, 0x30, 0x02, 0x10,
+	// 0x0c: ld r4, [r0+0x101c] -- ожидаемая CRC из шапки
+	0x0c, 0x40, 0x1c, 0x10,
+	// 0x17: cmp r3, r4 -- сверяем, не подделали ли нас
+	0x17, 0x34, 0x00, 0x00,
+	// 0x1a: jne sup_prokis -- не сошлось? суп прокис, дальше не идём
+	0x1a, 0x00, 0x00, 0x01,
+	// 0x01: ldi sp, 0x1f00 -- стек ещё раз наверх, на всякий случай
+	0x01, 0x70, 0x00, 0x1f,
+	// 0x01: ldi r1, 3 -- три значит "пошли дальше"
+	0x01, 0x10, 0x03, 0x00,
+	// 0x0b: stb [r0+0x1000], r1 -- статус "всё хорошо" для хвоста
+	0x0b, 0x10, 0x00, 0x10,
+	// 0x0e: jmp 0x2000 -- прыжок в ядро, точка невозврата
+	0x0e, 0x00, 0x00, 0x20,
+	// 0x01: ldi r1, 4 -- четыре значит "прокисло"
+	0x01, 0x10, 0x04, 0x00,
+	// 0x0b: stb [r0+0x1000], r1 -- статус "мусор" для тех, кто после нас
+	0x0b, 0x10, 0x00, 0x10,
+	// 0x15: hlt -- и спим навсегда, нам больше нечего сказать
+	0x15, 0x00, 0x00, 0x00,
+];
+
+// смещение внутри BOOT, где лежат два байта семени (инструкция 19, поля imm)
+pub const BOOT_KLYUCH: usize = 78;
+
 // сапог читает диск, диск читает газету, газета оплачивает CRC.
 pub fn rom_tapka() -> Result<Vec<u8>, String> {
-	let source = format!(
-		r#"
+	let mut rom = BOOT.to_vec();
+	let key = semechko(otpechatok());
+	// семя подшивается в инструкцию ldi: старший байт вторым, как у всех
+	rom[BOOT_KLYUCH] = (key & 0xff) as u8;
+	rom[BOOT_KLYUCH + 1] = (key >> 8) as u8;
+	if rom.len() > STATUS as usize {
+		return Err("Мега-ОС: ROM съел собственную справку".into());
+	}
+	Ok(rom)
+}
+
+pub fn zagruzit(image: &[u8]) -> Result<ZavedennayaMega, String> {
+	try!(proverit_shapku(image, otpechatok()));
+	let rom = try!(rom_tapka());
+	let mut bus = Bus::new(0);
+	bus.capture_uart();
+	bus.load();
+	try!(bus.reset(&rom));
+	bus.attach_disk(image.to_vec());
+	let mut cpu = Cpu::new();
+	let limit = 1000 + (word(image, 8) as u64) * 110;
+	while !cpu.halted && cpu.cycles < limit {
+		cpu.step(&mut bus);
+		if bus.take_fault() {
+			return Err("Мега-ОС: отказ RAM при загрузке".into());
+		}
+		if cpu.pc.to_u16() == YADRO && bus.peek(STATUS) == 3 {
+			let crc = bus.peek(STATUS + 2) as u16 | (bus.peek(STATUS + 3) as u16) << 8;
+			let boot_cycles = cpu.cycles;
+			return Ok(ZavedennayaMega {
+				cpu: cpu,
+				bus: bus,
+				crc: crc,
+				boot_cycles: boot_cycles,
+			});
+		}
+	}
+	if bus.peek(STATUS) == 4 {
+		Err("Мега-ОС: гостевая CRC16 не совпала; ядро не запущено".into())
+	} else {
+		Err("Мега-ОС: загрузчик исчерпал лимит инструкций".into())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	// исходник загрузчика в ассемблере. он же документация, он же эталон:
+	// тест ниже собирает его с нулевым семенем и сверяет с BOOT байт в байт
+	const BOOT_SOURCE: &'static str = r#"
 cli
 ldi sp, 0x1f00
 ldi r0, 0
@@ -215,52 +409,23 @@ sup_prokis:
 ldi r1, 4
 stb [r0+0x1000], r1
 hlt
-"#,
-		key = semechko(otpechatok())
-	);
-	let rom = try!(asm::assemble(&source));
-	if rom.len() > STATUS as usize {
-		return Err("Мега-ОС: ROM съел собственную справку".into());
-	}
-	Ok(rom)
-}
+"#;
 
-pub fn zagruzit(image: &[u8]) -> Result<ZavedennayaMega, String> {
-	try!(proverit_shapku(image, otpechatok()));
-	let rom = try!(rom_tapka());
-	let mut bus = Bus::new(0);
-	bus.capture_uart();
-	bus.load();
-	try!(bus.reset(&rom));
-	bus.attach_disk(image.to_vec());
-	let mut cpu = Cpu::new();
-	let limit = 1000 + (word(image, 8) as u64) * 110;
-	while !cpu.halted && cpu.cycles < limit {
-		cpu.step(&mut bus);
-		if bus.take_fault() {
-			return Err("Мега-ОС: отказ RAM при загрузке".into());
+	#[test]
+	fn boot_sobran_rukami_i_sovpal_s_isxodnikom() {
+		let source = BOOT_SOURCE.replace("{key}", "0");
+		let rom = asm::assemble(&source).unwrap();
+		assert_eq!(rom.len(), BOOT.len(), "длина загрузчика разошлась");
+		for i in 0..rom.len() {
+			assert_eq!(rom[i], BOOT[i], "байт номер {} разошёлся с исходником", i);
 		}
-		if cpu.pc.to_u16() == YADRO && bus.peek(STATUS) == 3 {
-			let crc = bus.peek(STATUS + 2) as u16 | (bus.peek(STATUS + 3) as u16) << 8;
-			let boot_cycles = cpu.cycles;
-			return Ok(ZavedennayaMega {
-				cpu: cpu,
-				bus: bus,
-				crc: crc,
-				boot_cycles: boot_cycles,
-			});
-		}
+		// семя реально подшивается, а не лежит нулём
+		let zhe = rom_tapka().unwrap();
+		let key = semechko(otpechatok());
+		assert_eq!(zhe[BOOT_KLYUCH], (key & 0xff) as u8);
+		assert_eq!(zhe[BOOT_KLYUCH + 1], (key >> 8) as u8);
 	}
-	if bus.peek(STATUS) == 4 {
-		Err("Мега-ОС: гостевая CRC16 не совпала; ядро не запущено".into())
-	} else {
-		Err("Мега-ОС: загрузчик исчерпал лимит инструкций".into())
-	}
-}
 
-#[cfg(test)]
-mod tests {
-	use super::*;
 	#[test]
 	fn crc_imeet_nogi() {
 		assert_eq!(poschitat_sopli(b"123456789"), 0x29b1);

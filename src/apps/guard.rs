@@ -42,6 +42,10 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
 			"mega_os/rebenok.asm",
 			include_str!("../mega_os/rebenok.asm"),
 		),
+		(
+			"mega_os/toropyga.asm",
+			include_str!("../mega_os/toropyga.asm"),
+		),
 		("apps/mod.rs", include_str!("mod.rs")),
 		("apps/hello.asm", include_str!("hello.asm")),
 		(
@@ -63,6 +67,8 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
 		("apps/font8.asm", include_str!("font8.asm")),
 		("apps/selftest.asm", include_str!("selftest.asm")),
 		("apps/player.asm", include_str!("player.asm")),
+		("apps/kalkulyator.asm", include_str!("kalkulyator.asm")),
+		("apps/zhizn.asm", include_str!("zhizn.asm")),
 		("apps/vblank.asm", include_str!("vblank.asm")),
 		("apps/color.asm", include_str!("color.asm")),
 		("apps/term/mod.rs", include_str!("term/mod.rs")),
@@ -83,7 +89,7 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
 	]
 }
 
-pub const SUMMA: u32 = 0x8424ec21; // СУММА: 0x8424ec21
+pub const SUMMA: u32 = 0xb74a4132; // СУММА: 0xb74a4132
 
 pub fn summa() -> u32 {
 	check::zone_sum(&files(), 1)

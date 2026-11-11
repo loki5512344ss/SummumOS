@@ -16,6 +16,8 @@ pub fn self_src() -> String {
 	s.push_str(include_str!("../hw/cpu.rs"));
 	s.push_str(include_str!("../hw/gpu.rs"));
 	s.push_str(include_str!("../hw/bus.rs"));
+	s.push_str(include_str!("../hw/disasm.rs"));
+	s.push_str(include_str!("../hw/rom_shrift.rs"));
 	s.push_str(include_str!("../hw/guard.rs"));
 	s.push_str(include_str!("../toolchain/mod.rs"));
 	s.push_str(include_str!("../toolchain/asm.rs"));
@@ -29,12 +31,18 @@ pub fn self_src() -> String {
 	s.push_str(include_str!("../toolchain/guard.rs"));
 	s.push_str(include_str!("../lang/mod.rs"));
 	s.push_str(include_str!("../lang/lua/mod.rs"));
+	s.push_str(include_str!("../lang/yazichok/mod.rs"));
+	s.push_str(include_str!("../lang/yazichok/lex.rs"));
+	s.push_str(include_str!("../lang/yazichok/razbor.rs"));
+	s.push_str(include_str!("../lang/yazichok/shema.rs"));
+	s.push_str(include_str!("../lang/yazichok/hello.gv"));
 	s.push_str(include_str!("../lang/guard.rs"));
 	s.push_str(include_str!("../mega_os/mod.rs"));
 	s.push_str(include_str!("../mega_os/boot.rs"));
 	s.push_str(include_str!("../mega_os/kernel.rs"));
 	s.push_str(include_str!("../mega_os/kernel.asm"));
 	s.push_str(include_str!("../mega_os/rebenok.asm"));
+	s.push_str(include_str!("../mega_os/toropyga.asm"));
 	s.push_str(include_str!("../apps/mod.rs"));
 	s.push_str(include_str!("../apps/hello.asm"));
 	s.push_str(include_str!("../apps/privet_iz_pelmenya.txt"));
@@ -50,6 +58,8 @@ pub fn self_src() -> String {
 	s.push_str(include_str!("../apps/font8.asm"));
 	s.push_str(include_str!("../apps/selftest.asm"));
 	s.push_str(include_str!("../apps/player.asm"));
+	s.push_str(include_str!("../apps/kalkulyator.asm"));
+	s.push_str(include_str!("../apps/zhizn.asm"));
 	s.push_str(include_str!("../apps/vblank.asm"));
 	s.push_str(include_str!("../apps/color.asm"));
 	s.push_str(include_str!("../apps/term/mod.rs"));

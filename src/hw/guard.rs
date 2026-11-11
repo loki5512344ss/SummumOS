@@ -37,11 +37,13 @@ pub fn files() -> Vec<(&'static str, &'static str)> {
 		("hw/cpu.rs", include_str!("cpu.rs")),
 		("hw/gpu.rs", include_str!("gpu.rs")),
 		("hw/bus.rs", include_str!("bus.rs")),
+		("hw/disasm.rs", include_str!("disasm.rs")),
+		("hw/rom_shrift.rs", include_str!("rom_shrift.rs")),
 		("hw/guard.rs", include_str!("guard.rs")),
 	]
 }
 
-pub const SUMMA: u32 = 0x23efb423; // СУММА: 0x23efb423
+pub const SUMMA: u32 = 0xdf056671; // СУММА: 0xdf056671
 
 pub fn summa() -> u32 {
 	check::zone_sum(&files(), 1)

@@ -114,7 +114,7 @@ pub use data::execute_me;
 pub use data::execute_me_audio;
 pub use data::rickroll;
 pub use data::rickroll_audio;
-pub use hw::{alu, bus, cpu, gates, isa, word};
+pub use hw::{alu, bus, cpu, disasm, gates, isa, rom_shrift, word};
 pub use junk::bubble;
 pub use lang::lua;
 pub use toolchain::cc::*;
@@ -224,7 +224,19 @@ fn main() {
 			.iter()
 			.position(|a| a == "--mega-image")
 			.map(|i| ::std::path::Path::new(&args[i + 1]));
-		talon(mega_os::otkryt_kastryulyu(path));
+		// терминал оставляем гостю напрямую: шелл сам спросит и сам дождётся.
+		// ленту (файл, пайп, /dev/null) кормим в UART целиком, иначе первый же
+		// опрос ввода упрётся в блокирующее чтение и виснем на веки
+		use std::io::IsTerminal;
+		use std::io::Read;
+		let vvod = if ::std::io::stdin().is_terminal() {
+			None
+		} else {
+			let mut lenta = Vec::new();
+			let _ = ::std::io::stdin().read_to_end(&mut lenta);
+			Some(lenta)
+		};
+		talon(mega_os::otkryt_kastryulyu(path, vvod));
 		return;
 	}
 
@@ -368,6 +380,86 @@ fn main() {
 			print!("{}", c_asm.unwrap());
 			return;
 		}
+	}
+
+	// --disasm: печатает бинарник в виде 0b0001_0010 и расшифровывает
+	// каждую инструкцию. без файла -- сам загрузчик, он и есть главный
+	// бинарник этого проекта.
+	if let Some(i) = args.iter().position(|a| a == "--disasm") {
+		let bytes: Vec<u8> = match args.get(i + 1) {
+			Some(p) if !p.starts_with("--") => read_file(p),
+			_ => mega_os::boot::BOOT.to_vec(),
+		};
+		print!("{}", disasm::razobrat(&bytes));
+		return;
+	}
+
+	// --yazik: наш язык. исходник собирается заново при каждом запуске,
+	// кэша нет и не будет: у нас даже ассемблер дважды на одну программу
+	// гоняет. без файла -- встроенный пример с Hello World.
+	let yazik_at = args
+		.iter()
+		.position(|a| a == "--yazik" || a == "--yazik-asm");
+	if let Some(i) = yazik_at {
+		let tekst: String = match args.get(i + 1) {
+			Some(p) if !p.starts_with("--") => read_text(p),
+			_ => lang::yazichok::PRIMER.to_string(),
+		};
+		match lang::yazichok::kompilyator(&tekst) {
+			Ok(a) => {
+				if args[i] == "--yazik-asm" {
+					print!("{}", a);
+					return;
+				}
+				c_asm = Some(a);
+			}
+			Err(e) => {
+				writeln!(std::io::stderr(), "компилятор говно-языка: {}", e).unwrap();
+				std::process::exit(1);
+			}
+		}
+	}
+
+	// --zhizn и --kalkulyator: игры на том же процессоре. Жизнь ничего
+	// не ждёт от мира и сама докручивает четыре поколения; калькулятор
+	// ждёт строку с stdin, а если stdin -- терминал, то честно посчитает
+	// ноль, потому что пустота -- это тоже число.
+	if let Some(i) = args.iter().position(|a| a == "--zhizn" || a == "--kalkulyator") {
+		let kalkulyator = args[i] == "--kalkulyator";
+		let tekst: &str = if kalkulyator {
+			KALKULYATOR
+		} else {
+			ZHIZN
+		};
+		let mut vvod: Vec<u8> = Vec::new();
+		if kalkulyator {
+			use std::io::IsTerminal;
+			use std::io::Read;
+			if !::std::io::stdin().is_terminal() {
+				let _ = ::std::io::stdin().read_to_end(&mut vvod);
+			}
+		}
+		let image = match asm::assemble(tekst) {
+			Ok(im) => im,
+			Err(e) => {
+				writeln!(std::io::stderr(), "assembler error: {}", e).unwrap();
+				std::process::exit(1);
+			}
+		};
+		let mut bus = bus::Bus::new(0);
+		bus.load();
+		if let Err(e) = bus.reset(&image) {
+			writeln!(std::io::stderr(), "{}", e).unwrap();
+			std::process::exit(1);
+		}
+		bus.capture_uart();
+		bus.feed_input(vvod);
+		let mut cpu = cpu::Cpu::new();
+		while !cpu.halted && cpu.cycles < 2_000_000 {
+			cpu.step(&mut bus);
+		}
+		print!("{}", String::from_utf8_lossy(&bus.take_captured()));
+		return;
 	}
 
 	if args.iter().any(|a| a == "--quine") {

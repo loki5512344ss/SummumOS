@@ -7,6 +7,7 @@ use word::Word;
 pub const POTOLK_KASTRYULI: u64 = 800000;
 pub const VOROTA: usize = 0x2000;
 pub const REBENOK: usize = 0x4000;
+pub const TOROPYGA: usize = 0x5000;
 
 // Ребёнок собирается отдельно: у общего ассемблера всего одна пенсия на метку.
 pub fn nadut_rebenka() -> Result<Vec<u8>, String> {
@@ -20,12 +21,27 @@ pub fn nadut_rebenka() -> Result<Vec<u8>, String> {
 	Ok(deti)
 }
 
+// Торопыга собирается во второй раз, потому что один раз -- это мало.
+pub fn nadut_toropygu() -> Result<Vec<u8>, String> {
+	let mut text = ".byte 0\n".repeat(TOROPYGA);
+	text.push_str(include_str!("toropyga.asm"));
+	let image = try!(asm::assemble(&text));
+	let kotlety = image[TOROPYGA..].to_vec();
+	if kotlety.len() == 0 || kotlety.len() > 256 {
+		return Err("Мега-ОС: торопыга не пролезла в файл на 256 байт".into());
+	}
+	Ok(kotlety)
+}
+
 // Три сосиски съели будильник. Четвёртая стала расписанием.
 pub fn nadut_megu() -> Result<Vec<u8>, String> {
 	let rebenok = try!(nadut_rebenka());
+	let toropyga = try!(nadut_toropygu());
 	let mut text = ".byte 0\n".repeat(VOROTA);
 	text.push_str(
-		&include_str!("kernel.asm").replace("@REBENOK_LEN@", &format!("{}", rebenok.len())),
+		&include_str!("kernel.asm")
+			.replace("@REBENOK_LEN@", &format!("{}", rebenok.len()))
+			.replace("@TOROPYGA_LEN@", &format!("{}", toropyga.len())),
 	);
 	let image = try!(asm::assemble(&text));
 	if image.len() > 0x7000 {
@@ -38,6 +54,12 @@ pub fn nadut_megu() -> Result<Vec<u8>, String> {
 	}
 	mega.resize(at, 0);
 	mega.extend(rebenok);
+	let gde = TOROPYGA - VOROTA;
+	if mega.len() > gde {
+		return Err("Мега-ОС: ребёнок налез на торопыгу".into());
+	}
+	mega.resize(gde, 0);
+	mega.extend(toropyga);
 	if mega.len() > 0x5000 {
 		return Err("Мега-ОС: образ не влез в POTOL_OK".into());
 	}
@@ -71,7 +93,7 @@ pub struct MegaOtchet {
 
 impl fmt::Display for MegaOtchet {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		write!(f, "Мега-ОС: завершено процессов {}/5; fork={}, отказов fork={}; exec={}, отказов exec={}; timer ticks={}, preemptions={}, switches={}, sleep={}, yield={}; RAM FS: операций={}, отклонено={}, каталогов={}, open={}, create={}, readdir={}, сундук: сохранений={}, загрузок={}, open по пути={}, восстановлено={}, dispatches={:?}",
+		write!(f, "Мега-ОС: завершено процессов {}/6; fork={}, отказов fork={}; exec={}, отказов exec={}; timer ticks={}, preemptions={}, switches={}, sleep={}, yield={}; RAM FS: операций={}, отклонено={}, каталогов={}, open={}, create={}, readdir={}, сундук: сохранений={}, загрузок={}, open по пути={}, восстановлено={}, dispatches={:?}",
 			self.exited, self.forks, self.fork_rejected, self.execs, self.exec_rejected, self.ticks, self.preemptions, self.switches,
 			self.sleeps, self.yields, self.file_operations, self.rejected, self.dirs, self.opens,
 			self.creates, self.readdirs, self.saves, self.loads, self.opens_put,
@@ -182,15 +204,15 @@ pub fn proverit_megu(bus: &mut Bus, restored: bool) -> Result<MegaOtchet, String
 		}
 		return Ok(report);
 	}
-	if report.exited != 5
+	if report.exited != 6
 		|| report.forks != 1
 		|| report.fork_rejected != 0
 		|| report.sleeps != 1
 		|| report.yields < 1
 		|| report.preemptions < 3
-		|| report.file_operations != 5
+		|| report.file_operations != 6
 		|| report.rejected < 5
-		|| report.execs != 1
+		|| report.execs != 2
 		|| report.dirs < 1
 		|| report.opens != 1
 		|| report.creates < 1
@@ -200,12 +222,17 @@ pub fn proverit_megu(bus: &mut Bus, restored: bool) -> Result<MegaOtchet, String
 		return Err(format!("Мега-ОС: неполный гостевой сценарий: {:?}", report));
 	}
 	for pid in 0..4 {
-		if word(bus, 0x8002 + pid * 32) != 0 || word(bus, 0x8008 + pid * 32) != 0 {
+		// торопыга умирает с кодом семь -- единственная, кого так можно.
+		let kod = word(bus, 0x8008 + pid * 32);
+		if word(bus, 0x8002 + pid * 32) != 0 || (kod != 0 && !(pid == 1 && kod == 7)) {
 			return Err(format!("Мега-ОС: процесс {} завершился с ошибкой", pid));
 		}
 	}
 	if word(bus, slot(1)) != 1 || word(bus, slozhit(slot(1), 2)) != 14 || word(bus, 0x8122) != 1 {
 		return Err("Мега-ОС: каталог или процесс потеряли тапок".into());
+	}
+	if word(bus, 0x8204) != 1 {
+		return Err("Мега-ОС: котлеты не разбужены флагом 0x8204".into());
 	}
 	// games -- каталог в слоте 2, doom -- файл в слоте 3. четвёртый слот уволен.
 	if word(bus, slot(2)) != 1
@@ -222,17 +249,24 @@ pub fn proverit_megu(bus: &mut Bus, restored: bool) -> Result<MegaOtchet, String
 	if word(bus, slot(6)) != 0 {
 		return Err("Мега-ОС: уволенный слот 6 всё ещё числится на работе".into());
 	}
-	// файл в ФС общий, а буфер 0xa000 читатель держит в своей квартире (слот 1).
+	// файл в ФС общий. буфер 0xa000 стёрла торопыга: exec выметал квартиру
+	// слота 1 и переехал туда с копией мебели родителя (0x55), а торопыга
+	// переписала 0xa001 на свой 0xbb. оба байта должны доехать.
 	let byvshaya = bus.peek(::bus::SPACE);
 	bus.set_space(1);
 	let mut isporchen = false;
 	for (i, b) in b"file from RAM\n".iter().enumerate() {
-		if bus.peek(slozhit(slozhit(slot(1), 16), i as u16)) != *b
-			|| bus.peek(0xa000 + i as u16) != *b
-		{
+		if bus.peek(slozhit(slozhit(slot(1), 16), i as u16)) != *b {
 			isporchen = true;
 			break;
 		}
+	}
+	if !isporchen && (bus.peek(0xa000) != 0x55 || bus.peek(0xa001) != 0xbb) {
+		return Err(format!(
+			"Мега-ОС: квартира 1 не та: a000={:02x} a001={:02x}",
+			bus.peek(0xa000),
+			bus.peek(0xa001),
+		));
 	}
 	bus.set_space(byvshaya);
 	if isporchen {
@@ -268,6 +302,18 @@ pub fn proverit_megu(bus: &mut Bus, restored: bool) -> Result<MegaOtchet, String
 			return Err("Мега-ОС: ребёнок не доехал до 0x4000".into());
 		}
 	}
+	// торопыга живёт в файле 4, в дырке 0x5000 и больше нигде.
+	let toropyga = try!(nadut_toropygu());
+	if word(bus, slot(4)) != 1 || word(bus, slozhit(slot(4), 2)) != toropyga.len() as u16 {
+		return Err("Мега-ОС: файл с торопыгой потерялся в RAM-ФС".into());
+	}
+	for (i, b) in toropyga.iter().enumerate() {
+		if bus.peek(slozhit(slozhit(slot(4), 16), i as u16)) != *b
+			|| bus.peek(0x5000 + i as u16) != *b
+		{
+			return Err("Мега-ОС: торопыга не доехала до 0x5000".into());
+		}
+	}
 	for (i, b) in b"doom\0\0\0\0".iter().enumerate() {
 		if bus.peek(
 			alu::add(Word::from_u16(0xa800), Word::from_u16(i as u16))
@@ -281,6 +327,9 @@ pub fn proverit_megu(bus: &mut Bus, restored: bool) -> Result<MegaOtchet, String
 	if !sobrano(bus, b"child\n")
 		|| !sobrano(bus, b"fork child\n")
 		|| !sobrano(bus, b"fork parent\n")
+		|| !sobrano(bus, b"toropyga\n")
+		|| !sobrano(bus, b"cean\n")
+		|| !sobrano(bus, b"clean\n")
 	{
 		return Err("Мега-ОС: ребёнок ничего не сказал".into());
 	}
@@ -302,6 +351,8 @@ mod tests {
 		bus.load();
 		bus.reset(&image).unwrap();
 		bus.capture_uart();
+		// шелл после демо получает ленту: hello, play и какая-то белиберда
+		bus.feed_input(b"hello\nplay\nblya\n".to_vec());
 		let mut cpu = Cpu::new();
 		cpu.pc = Word::from_u16(VOROTA as u16);
 		while !cpu.halted && cpu.cycles < POTOLK_KASTRYULI {
@@ -316,15 +367,17 @@ mod tests {
 				String::from_utf8_lossy(&bus.take_captured())
 			),
 		};
-		assert_eq!(report.execs, 1);
-		assert_eq!(report.exited, 5);
+		assert_eq!(report.execs, 2);
+		assert_eq!(report.exited, 6);
 		assert_eq!(report.forks, 1);
 		assert_eq!(report.dirs, 1);
 		assert_eq!(report.opens, 1);
 		assert_eq!(report.creates, 1);
 		assert!(report.readdirs >= 1);
 		assert!(report.dispatches[0] >= 2);
-		assert!(report.dispatches[1] >= 2);
+		// exec торопыги обнулил счётчик слота 1, поэтому от него остаётся
+		// только её собственная табуретка.
+		assert!(report.dispatches[1] >= 1);
 		assert!(
 			report.dispatches[2] >= 2,
 			"CPU-bound process must be preempted"
@@ -339,12 +392,18 @@ mod tests {
 		assert_eq!(
 			lines,
 			vec![
+				"> Hello, World!",
+				"> nothing to play",
+				"> unknown command",
 				"MEGA OS",
 				"awake A",
+				"cean",
 				"child",
+				"clean",
 				"file from RAM",
 				"fork child",
 				"fork parent",
+				"toropyga",
 				"worker B"
 			]
 		);
@@ -358,6 +417,7 @@ mod tests {
 		source.push_str(
 			&include_str!("kernel.asm")
 				.replace("@REBENOK_LEN@", "24")
+				.replace("@TOROPYGA_LEN@", "8")
 				.replace("kartoshka:\n", "kartoshka:\njmp proverka_sunduka\n"),
 		);
 		source.push_str("\nproverka_sunduka:\ncli\nldi r0, 0x8140\nld r1, [r0]\njz r1, sunduka_net\nldi r1, 0x8200\nldi r0, 1\nst [r1], r0\nldi r2, 0x9010\nldb r0, [r2]\ncmpi r0, 102\njne sunduka_net\nldb r0, [r2+1]\ncmpi r0, 105\njne sunduka_net\nldb r0, [r2+2]\ncmpi r0, 108\njne sunduka_net\nldi r1, 0x8202\nldi r0, 1\nst [r1], r0\nsunduka_net:\nhlt\n");
@@ -403,6 +463,7 @@ mod fork_tests {
 		source.push_str(
 			&include_str!("kernel.asm")
 				.replace("@REBENOK_LEN@", "4")
+				.replace("@TOROPYGA_LEN@", "8")
 				.replace("kartoshka:\n", "kartoshka:\njmp proverka_forka\n"),
 		);
 		source.push_str("\nproverka_forka:\ncli\n");
@@ -412,6 +473,7 @@ mod fork_tests {
 		bus.load();
 		bus.reset(&image).unwrap();
 		bus.capture_uart();
+		bus.feed_input(Vec::new());
 		let mut cpu = ::cpu::Cpu::new();
 		cpu.pc = Word::from_u16(VOROTA as u16);
 		while !cpu.halted && cpu.cycles < 100_000 {

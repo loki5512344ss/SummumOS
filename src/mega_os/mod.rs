@@ -23,7 +23,9 @@ pub fn zakryt_kastryulyu(path: &Path) -> Result<(), String> {
 	Ok(())
 }
 
-pub fn otkryt_kastryulyu(path: Option<&Path>) -> Result<(), String> {
+/// `vvod` -- что засунуть в UART вместо клавиатуры. `None` -- не кормим
+/// вовсе: тогда гость сам спросит у настоящего stdin, если тот терминал.
+pub fn otkryt_kastryulyu(path: Option<&Path>, vvod: Option<Vec<u8>>) -> Result<(), String> {
 	let default = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/mega_os/yadro_v_tapke.img");
 	let path = path.unwrap_or(&default);
 	let file = try!(::std::fs::File::open(path).map_err(|e| format!(
@@ -41,6 +43,9 @@ pub fn otkryt_kastryulyu(path: Option<&Path>) -> Result<(), String> {
 		return Err(format!("образ Мега-ОС больше {} байт", limit));
 	}
 	let mut mega = try!(boot::zagruzit(&image));
+	if let Some(lenta) = vvod {
+		mega.bus.feed_input(lenta);
+	}
 	let nachalo = mega.cpu.cycles;
 	while !mega.cpu.halted && mega.cpu.cycles - nachalo < kernel::POTOLK_KASTRYULI {
 		mega.cpu.step(&mut mega.bus);
@@ -78,7 +83,7 @@ mod tests {
 		let path = ::std::env::temp_dir().join(format!("mega-disk-limit-{}", ::std::process::id()));
 		let limit = boot::POTOLOK_DISKA;
 		::std::fs::write(&path, vec![0; limit + 1]).unwrap();
-		let result = otkryt_kastryulyu(Some(&path));
+		let result = otkryt_kastryulyu(Some(&path), None);
 		::std::fs::remove_file(&path).unwrap();
 		assert!(result.unwrap_err().contains("больше"));
 	}
@@ -88,14 +93,16 @@ mod tests {
 		let payload = kernel::nadut_megu().unwrap();
 		let disk = boot::zapechatat(&payload).unwrap();
 		let mut mega = boot::zagruzit(&disk).unwrap();
+		// ввод пустой: шелл не должен лезть в настоящий stdin из теста
+		mega.bus.feed_input(Vec::new());
 		let nachalo = mega.cpu.cycles;
 		while !mega.cpu.halted && mega.cpu.cycles - nachalo < kernel::POTOLK_KASTRYULI {
 			mega.cpu.step(&mut mega.bus);
 		}
 		assert!(mega.cpu.halted, "Мега-ОС не завершила гостевой сценарий");
 		let otchet = kernel::proverit_megu(&mut mega.bus, false).unwrap();
-		assert_eq!(otchet.execs, 1);
-		assert_eq!(otchet.exited, 5);
+		assert_eq!(otchet.execs, 2);
+		assert_eq!(otchet.exited, 6);
 		assert_eq!(otchet.forks, 1);
 		assert_eq!(otchet.dirs, 1);
 		assert_eq!(otchet.opens, 1);
@@ -108,12 +115,12 @@ mod tests {
 				"процесс {} не завершился",
 				pid
 			);
-			assert_eq!(
-				mega.bus.peek(0x8008 + pid * 32),
-				0,
-				"процесс {} оставил ошибку",
-				pid
-			);
+			let kod = mega.bus.peek(0x8008 + pid * 32) as u16;
+			if pid == 1 {
+				assert_eq!(kod, 7, "торопыга обязана умереть с семёркой");
+			} else {
+				assert_eq!(kod, 0, "процесс {} оставил ошибку", pid);
+			}
 		}
 		let text = String::from_utf8(mega.bus.take_captured()).unwrap();
 		for line in &[
@@ -124,9 +131,12 @@ mod tests {
 			"child",
 			"fork child",
 			"fork parent",
+			"toropyga",
+			"cean",
+			"clean",
 		] {
 			assert_eq!(text.lines().filter(|v| v == line).count(), 1, "{}", text);
 		}
-		assert_eq!(text.lines().count(), 7, "{}", text);
+		assert_eq!(text.lines().count(), 10, "{}", text);
 	}
 }
